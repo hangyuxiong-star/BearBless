@@ -4,6 +4,12 @@ from pathlib import Path
 from bearbless.agent.model_client import GUIPlusPhoneModel, ModelClientError
 
 
+def test_gui_plus_uses_official_mobile_swipe_protocol():
+    assert '"name":"mobile_use"' in GUIPlusPhoneModel.SYSTEM_PROMPT
+    assert '"coordinate2"' in GUIPlusPhoneModel.SYSTEM_PROMPT
+    assert '"swipe"' in GUIPlusPhoneModel.SYSTEM_PROMPT
+
+
 def test_gui_plus_translates_native_tap_tool_call():
     result = GUIPlusPhoneModel._parse_tool_call(
         '<tool_call>{"name":"phone_use","arguments":'

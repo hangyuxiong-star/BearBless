@@ -67,16 +67,21 @@ def _normalize_model_decision(raw: dict, width: int = 1080, height: int = 2400) 
 
     missing_end = decision.get("x2") is None or decision.get("y2") is None
     if direction and missing_end:
-        defaults = {
-            "up": (width // 2, int(height * .72), width // 2, int(height * .32)),
-            "down": (width // 2, int(height * .32), width // 2, int(height * .72)),
-            "left": (int(width * .78), height // 2, int(width * .22), height // 2),
-            "right": (int(width * .22), height // 2, int(width * .78), height // 2),
+        x = int(decision.get("x") if decision.get("x") is not None else width // 2)
+        y = int(decision.get("y") if decision.get("y") is not None else height // 2)
+        picker = any(marker in direction_value for marker in (
+            "picker", "wheel", "滚轮", "齿轮", "时间", "小时", "分钟", "日期",
+        ))
+        distance = int((height if direction in {"up", "down"} else width) * (.10 if picker else .35))
+        endpoints = {
+            "up": (x, max(0, y - distance)),
+            "down": (x, min(height - 1, y + distance)),
+            "left": (max(0, x - distance), y),
+            "right": (min(width - 1, x + distance), y),
         }
-        x, y, x2, y2 = defaults[direction]
         decision.setdefault("x", x)
         decision.setdefault("y", y)
-        decision["x2"], decision["y2"] = x2, y2
+        decision["x2"], decision["y2"] = endpoints[direction]
     decision.setdefault("duration_ms", 400)
     return decision
 

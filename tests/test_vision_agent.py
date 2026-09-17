@@ -111,6 +111,15 @@ def test_directional_swipe_gets_bounded_points():
     assert 0 <= decision["y2"] < 2400
 
 
+def test_picker_swipe_preserves_column_and_uses_short_drag():
+    decision = _normalize_model_decision({
+        "action": "SWIPE", "x": 730, "y": 950,
+        "direction": "向上滑动分钟滚轮", "capability": "CHANGE_SETTING",
+    })
+    assert decision["x2"] == 730
+    assert decision["y2"] == 710
+
+
 def test_ambiguous_incomplete_swipe_is_not_invented(tmp_path: Path):
     planner = VisionPlanner(FakeClient({
         "action": "SWIPE", "x": 500, "y": 1200,
