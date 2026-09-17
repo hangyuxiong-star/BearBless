@@ -20,3 +20,11 @@ def test_media_skill_owns_deterministic_completion_probe():
     selected = registry.resolve("播放歌曲银河赴约")
     assert [skill.name for skill in selected] == ["general_gui", "media_playback"]
     assert len(registry.completion_probe(selected).probes) == 1
+
+
+def test_frozen_scope_routes_restaurant_and_map_skills():
+    registry = SkillRegistry(Adb())
+    restaurant = [skill.name for skill in registry.resolve("打开美团搜索附近咖啡")]
+    navigation = [skill.name for skill in registry.resolve("打开地图导航去机场")]
+    assert restaurant == ["general_gui", "restaurant_research"]
+    assert navigation == ["general_gui", "map_navigation"]

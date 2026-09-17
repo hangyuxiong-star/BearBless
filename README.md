@@ -27,6 +27,8 @@ flowchart LR
 
 当前目标是一个可信演示原型，不宣称生产级通用性。已保存的真实成功证据包括：隔离 DSB 页面验证、蓝牙状态查询和网易云播放；闹钟、美团复杂搜索和消息发送仍属于回归改进项。完整设计、实验与失败记录见 [ARCHITECTURE.md](ARCHITECTURE.md)、[DECISIONS.md](DECISIONS.md) 和 [DELIVERY_AUDIT.md](DELIVERY_AUDIT.md)。
 
+当前产品回归范围冻结为五类：QQ、​美团、地图、音乐和时钟。新 App 仍可尝试通用 GUI 能力，但不作为本次交付承诺。
+
 ## 部署
 
 要求：Android 11+、USB 调试、ADB、scrcpy 4.x、Python 3.11+。

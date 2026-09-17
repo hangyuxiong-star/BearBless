@@ -39,6 +39,13 @@ SYSTEM_APP_ALIASES: dict[str, str] = {
     "设置": "com.android.settings",
 }
 
+MAP_PACKAGE_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ("高德地图", "com.autonavi.minimap"),
+    ("百度地图", "com.baidu.BaiduMap"),
+    ("腾讯地图", "com.tencent.map"),
+    ("花瓣地图", "com.huawei.maps.app"),
+)
+
 
 def resolve_explicit_app_alias(goal: str, adb: AdbClient) -> str | None:
     """Resolve unambiguous user-facing app names before asking a model.
@@ -47,6 +54,13 @@ def resolve_explicit_app_alias(goal: str, adb: AdbClient) -> str | None:
     small, verified alias layer. Longer aliases win so a phrase such as
     ``系统设置`` cannot be shadowed by ``设置``.
     """
+    for alias, package in MAP_PACKAGE_CANDIDATES:
+        if alias in goal and package_installed(adb, package):
+            return package
+    if any(marker in goal for marker in ("地图", "导航", "路线")):
+        for _, package in MAP_PACKAGE_CANDIDATES:
+            if package_installed(adb, package):
+                return package
     for alias in sorted(SYSTEM_APP_ALIASES, key=len, reverse=True):
         package = SYSTEM_APP_ALIASES[alias]
         if alias in goal and package_installed(adb, package):

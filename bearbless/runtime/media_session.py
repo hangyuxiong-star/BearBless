@@ -25,6 +25,8 @@ class MediaSessionCompletionProbe:
     adb: AdbClient
 
     def verify(self, state: TaskState) -> VerificationResult | None:
+        if any(marker in state.goal for marker in ("不要播放", "禁止播放", "无需播放")):
+            return None
         target = requested_track(state.goal)
         if not target or "播放" not in state.goal:
             return None

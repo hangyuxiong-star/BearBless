@@ -32,3 +32,11 @@ def test_media_session_does_not_complete_wrong_or_paused_track():
     wrong = MediaSessionCompletionProbe(Adb("state=PlaybackState {state=3,}\n别的歌")).verify(state)  # type: ignore[arg-type]
     paused = MediaSessionCompletionProbe(Adb("state=PlaybackState {state=2,}\n银河赴约")).verify(state)  # type: ignore[arg-type]
     assert wrong is None and paused is None
+
+
+def test_media_session_never_completes_a_do_not_play_query():
+    output = "state=PlaybackState {state=3,}\n银河赴约"
+    result = MediaSessionCompletionProbe(Adb(output)).verify(  # type: ignore[arg-type]
+        TaskState("t", "打开网易云搜索银河赴约，不要播放")
+    )
+    assert result is None
