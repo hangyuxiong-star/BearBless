@@ -14,5 +14,6 @@ artifacts/shadow-test/*.json
 artifacts/shadow-test/*.png
 artifacts/runs/
 artifacts/requests/
+artifacts/probes/
 !artifacts/.gitkeep
 !artifacts/doctor/.gitkeep
