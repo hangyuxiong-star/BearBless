@@ -1,0 +1,7 @@
+com.bearbless.bridge.app-pngs-0 /Users/powerbear/Documents/job/agentphone/android-bridge/app/build/generated/res/pngs/debug
+com.bearbless.bridge.app-resValues-1 /Users/powerbear/Documents/job/agentphone/android-bridge/app/build/generated/res/resValues/debug
+com.bearbless.bridge.app-packageDebugResources-2 /Users/powerbear/Documents/job/agentphone/android-bridge/app/build/intermediates/incremental/debug/packageDebugResources/merged.dir
+com.bearbless.bridge.app-packageDebugResources-3 /Users/powerbear/Documents/job/agentphone/android-bridge/app/build/intermediates/incremental/debug/packageDebugResources/stripped.dir
+com.bearbless.bridge.app-debug-4 /Users/powerbear/Documents/job/agentphone/android-bridge/app/build/intermediates/merged_res/debug/mergeDebugResources
+com.bearbless.bridge.app-debug-5 /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/debug/res
+com.bearbless.bridge.app-main-6 /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/res

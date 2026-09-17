@@ -1,0 +1,26 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.bearbless.bridge.app-mergeDebugResources-2:/values/values.xml",
+            "map": [
+                {
+                    "source": "/Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/res/values/strings.xml",
+                    "from": {
+                        "startLines": "2,1",
+                        "startColumns": "4,4",
+                        "startOffsets": "70,16",
+                        "endColumns": "99,53",
+                        "endOffsets": "165,65"
+                    },
+                    "to": {
+                        "startLines": "2,3",
+                        "startColumns": "4,4",
+                        "startOffsets": "55,155",
+                        "endColumns": "99,53",
+                        "endOffsets": "150,204"
+                    }
+                }
+            ]
+        }
+    ]
+}

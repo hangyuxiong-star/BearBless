@@ -1,0 +1,180 @@
+from pathlib import Path
+
+import pytest
+
+from bearbless.agent.state import TaskState
+from bearbless.agent.grounding import GroundedScreen, MarkedElement
+from bearbless.agent.vision import VisionAgentError, VisionPlanner, _normalize_model_decision
+from bearbless.errors import AgentTerminalDecision
+from bearbless.runtime.actions import ActionType
+
+
+class FakeClient:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def complete(self, prompt, frame_path=None):
+        assert "只决定下一步" in prompt
+        return dict(self.payload)
+
+
+class NativeFakeClient(FakeClient):
+    native_tool_protocol = True
+
+    def complete(self, prompt, frame_path=None):
+        self.seen_prompt = prompt
+        self.seen_frame = frame_path
+        return dict(self.payload)
+
+
+class FakeGrounder:
+    def ground(self, frame_path):
+        return GroundedScreen(Path(frame_path), (MarkedElement(1, "搜索", (10, 20, 110, 80)),))
+
+
+def observed_state(tmp_path: Path) -> TaskState:
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"png")
+    return TaskState("agent-1", "打开美团找猪脚饭", last_observation={"frame_path": str(frame)})
+
+
+def test_vision_planner_returns_one_guardable_action(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({"action": "TAP", "x": 100, "y": 200, "reason": "点击搜索", "capability": "SEARCH"}), 31, {"美团": "com.sankuai.meituan"}, FakeGrounder())
+    actions = planner.plan(observed_state(tmp_path))
+    assert len(actions) == 1
+    assert actions[0].action == ActionType.TAP
+    assert actions[0].display_id == 31
+
+
+def test_vision_planner_rejects_model_open_app(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({"action": "OPEN_APP", "package": "evil"}), 31, {"美团": "com.sankuai.meituan"}, FakeGrounder())
+    with pytest.raises(VisionAgentError):
+        planner.plan(observed_state(tmp_path))
+
+
+def test_vision_planner_records_finish_result(tmp_path: Path):
+    state = observed_state(tmp_path)
+    planner = VisionPlanner(FakeClient({"action": "FINISH", "reason": "已找到一家猪脚饭"}), 31, {}, FakeGrounder())
+    assert planner.plan(state)[0].action == ActionType.FINISH
+    assert state.collected_data["agent_result"] == "已找到一家猪脚饭"
+
+
+def test_vision_planner_clamps_wait_to_safe_runtime_bound(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({"action": "WAIT", "seconds": 999}), 31, {}, FakeGrounder())
+    action = planner.plan(observed_state(tmp_path))[0]
+    assert action.seconds == 5.0
+
+
+def test_click_element_maps_to_center(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({"action": "CLICK_ELEMENT", "element_id": 1, "capability": "NAVIGATE"}), 31, {}, FakeGrounder())
+    action = planner.plan(observed_state(tmp_path))[0]
+    assert action.action == ActionType.TAP
+    assert (action.x, action.y) == (60, 50)
+
+
+def test_click_element_label_is_normalized_to_unique_ocr_id(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({"action": "CLICK_ELEMENT", "element_id": "搜索", "capability": "SEARCH"}), 31, {}, FakeGrounder())
+    action = planner.plan(observed_state(tmp_path))[0]
+    assert action.action == ActionType.TAP
+    assert (action.x, action.y) == (60, 50)
+    assert action.capability.value == "SEARCH"
+
+
+def test_legacy_click_element_without_capability_gets_navigation_only(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({"action": "CLICK_ELEMENT", "element_id": 1}), 31, {}, FakeGrounder())
+    action = planner.plan(observed_state(tmp_path))[0]
+    assert action.capability.value == "NAVIGATE"
+
+
+def test_raw_tap_without_capability_is_still_rejected(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({"action": "TAP", "x": 10, "y": 10}), 31, {}, FakeGrounder())
+    with pytest.raises(VisionAgentError, match="capability"):
+        planner.plan(observed_state(tmp_path))
+
+
+def test_swipe_array_dialect_is_normalized():
+    decision = _normalize_model_decision({
+        "action": "swipe", "start": [500, 1700], "end": [500, 800],
+        "capability": "NAVIGATE",
+    })
+    assert (decision["x"], decision["y"], decision["x2"], decision["y2"]) == (500, 1700, 500, 800)
+    assert decision["duration_ms"] == 400
+
+
+def test_directional_swipe_gets_bounded_points():
+    decision = _normalize_model_decision({
+        "action": "SWIPE", "direction": "向上滑动时间选择器",
+        "capability": "CHANGE_SETTING",
+    })
+    assert decision["y"] > decision["y2"]
+    assert 0 <= decision["x"] < 1080
+    assert 0 <= decision["y2"] < 2400
+
+
+def test_ambiguous_incomplete_swipe_is_not_invented(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({
+        "action": "SWIPE", "x": 500, "y": 1200,
+        "capability": "NAVIGATE",
+    }), 31, {}, FakeGrounder())
+    with pytest.raises(VisionAgentError, match="SWIPE requires both points"):
+        planner.plan(observed_state(tmp_path))
+
+
+def test_low_confidence_interactive_action_is_rejected(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({
+        "action": "TAP", "x": 10, "y": 10,
+        "capability": "NAVIGATE", "target": "搜索", "confidence": 0.4,
+    }), 31, {}, FakeGrounder())
+    with pytest.raises(VisionAgentError, match="low-confidence"):
+        planner.plan(observed_state(tmp_path))
+
+
+def test_confidence_metadata_is_not_forwarded_to_runtime_action(tmp_path: Path):
+    planner = VisionPlanner(FakeClient({
+        "action": "CLICK_ELEMENT", "element_id": 1,
+        "capability": "SEARCH", "target": "搜索", "confidence": 0.92,
+    }), 31, {}, FakeGrounder())
+    action = planner.plan(observed_state(tmp_path))[0]
+    assert action.action == ActionType.TAP
+
+
+def test_native_gui_model_receives_clean_frame_and_non_conflicting_prompt(tmp_path: Path):
+    state = observed_state(tmp_path)
+    client = NativeFakeClient({
+        "action": "TAP", "x": 10, "y": 20, "capability": "NAVIGATE",
+    })
+    planner = VisionPlanner(client, 31, {}, FakeGrounder())
+    planner.plan(state)
+    assert client.seen_frame == state.last_observation["frame_path"]
+    assert "Please generate the next move" in client.seen_prompt
+    assert "只返回一个 JSON 对象" not in client.seen_prompt
+
+
+def test_blank_frame_waits_without_calling_model(tmp_path: Path):
+    state = observed_state(tmp_path)
+    state.last_observation["fingerprint"] = "f" * 64
+    planner = VisionPlanner(FakeClient({"action": "ABORT"}), 31, {}, FakeGrounder())
+    action = planner.plan(state)[0]
+    assert action.action == ActionType.WAIT
+    assert state.collected_data["blank_frame_count"] == 1
+
+
+def test_repeated_blank_frames_abort_as_rendering_incompatibility(tmp_path: Path):
+    state = observed_state(tmp_path)
+    state.last_observation["fingerprint"] = "0" * 64
+    state.collected_data["blank_frame_count"] = 3
+    planner = VisionPlanner(FakeClient({"action": "ABORT"}), 31, {}, FakeGrounder())
+    with pytest.raises(AgentTerminalDecision, match="不兼容副显示渲染"):
+        planner.plan(state)
+
+
+def test_package_selection_must_return_installed_package():
+    from bearbless.agent.vision import OllamaVisionClient
+
+    class Client(OllamaVisionClient):
+        def complete(self, prompt, frame_path=None):
+            assert "已安装包名" in prompt
+            return {"package": "com.netease.cloudmusic"}
+
+    client = Client()
+    assert client.select_package("播放歌曲", ["com.netease.cloudmusic"]) == "com.netease.cloudmusic"

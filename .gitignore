@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+artifacts/doctor/*.json
+artifacts/shadow-test/*.json
+artifacts/shadow-test/*.png
+artifacts/runs/
+artifacts/requests/
+!artifacts/.gitkeep
+!artifacts/doctor/.gitkeep

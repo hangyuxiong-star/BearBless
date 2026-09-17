@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">仅在 BearBless Agent 虚拟屏中定位输入框并直接写入文字，不调用系统输入法。</string>
+    <string name="app_name">BearBless Bridge</string>
+</resources>

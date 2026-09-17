@@ -1,0 +1,63 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:2:1-25:12
+INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:2:1-25:12
+INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:2:1-25:12
+INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:2:1-25:12
+	package
+		INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml
+	android:versionName
+		INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml
+	android:versionCode
+		INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:2:11-69
+application
+ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:3:5-24:19
+INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:3:5-24:19
+	android:extractNativeLibs
+		INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml
+	android:supportsRtl
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:6:9-35
+	android:label
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:5:9-41
+	android:allowBackup
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:4:9-36
+service#com.bearbless.bridge.BearBlessAccessibilityService
+ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:7:9-18:19
+	android:label
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:10:13-45
+	android:exported
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:9:13-36
+	android:permission
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:11:13-79
+	android:name
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:8:13-58
+intent-filter#action:name:android.accessibilityservice.AccessibilityService
+ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:12:13-14:29
+action#android.accessibilityservice.AccessibilityService
+ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:13:17-92
+	android:name
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:13:25-89
+meta-data#android.accessibilityservice
+ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:15:13-17:72
+	android:resource
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:17:17-69
+	android:name
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:16:17-60
+provider#com.bearbless.bridge.BridgeProvider
+ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:20:9-23:39
+	android:authorities
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:22:13-63
+	android:exported
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:23:13-36
+	android:name
+		ADDED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml:21:13-43
+uses-sdk
+INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml
+INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/powerbear/Documents/job/agentphone/android-bridge/app/src/main/AndroidManifest.xml

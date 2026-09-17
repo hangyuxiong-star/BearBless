@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">BearBless Bridge</string>
+    <string name="accessibility_description">仅在 BearBless Agent 虚拟屏中定位输入框并直接写入文字，不调用系统输入法。</string>
+</resources>

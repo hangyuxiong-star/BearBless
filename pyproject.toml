@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bearbless"
+version = "0.1.0"
+description = "Non-interruptive Android agent runtime"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.8"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+dashboard = ["streamlit>=1.40"]
+voice = ["faster-whisper>=1.1", "opencc-python-reimplemented>=0.1.7"]
+
+[project.scripts]
+bearbless = "bearbless.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["device: requires a connected Android device"]
+
+[tool.setuptools.packages.find]
+include = ["bearbless*"]

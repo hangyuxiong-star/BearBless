@@ -1,0 +1,4 @@
+pydantic>=2.8
+
+# Install pytest for development: pip install -e '.[dev]'
+# Install the dashboard: pip install -e '.[dashboard]'

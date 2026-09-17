@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: transparent; color: #f5f5f7; font-family: -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; }
+    .speech { display:grid; grid-template-columns:auto 1fr auto; gap:14px; align-items:center; min-height:86px; padding:14px 16px; border:1px solid rgba(255,255,255,.10); border-radius:19px; background:#161617; }
+    button { width:54px; height:54px; border:0; border-radius:50%; cursor:pointer; color:white; background:#7657e8; font-size:22px; transition:.2s ease; }
+    button:hover { transform:scale(1.04); background:#876bf0; }
+    button.live { background:#ff4b55; animation:pulse 1.5s infinite; }
+    .copy { min-width:0; }
+    .status { color:#a78bfa; font-size:12px; font-weight:700; letter-spacing:.08em; margin-bottom:6px; }
+    .text { min-height:25px; color:#f5f5f7; font-size:17px; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .text.placeholder { color:#77777e; }
+    .timer { color:#a1a1a6; font-variant-numeric:tabular-nums; font-size:14px; }
+    .error { color:#ff8d95; }
+    @keyframes pulse { 50% { box-shadow:0 0 0 9px rgba(255,75,85,0); } 0%,100% { box-shadow:0 0 0 0 rgba(255,75,85,.28); } }
+    @media (max-width:600px) { .speech { grid-template-columns:auto 1fr; } .timer { display:none; } }
+  </style>
+</head>
+<body>
+  <div class="speech">
+    <button id="mic" aria-label="开始实时听写">●</button>
+    <div class="copy">
+      <div class="status" id="status">点击麦克风开始实时听写</div>
+      <div class="text placeholder" id="text">你说的话会在这里实时出现</div>
+    </div>
+    <div class="timer" id="timer">00:00</div>
+  </div>
+  <script>
+    const send = (type, data={}) => parent.postMessage({isStreamlitMessage:true,type,...data}, "*");
+    send("streamlit:componentReady", {apiVersion:1});
+    send("streamlit:setFrameHeight", {height:94});
+
+    const mic = document.getElementById("mic");
+    const status = document.getElementById("status");
+    const text = document.getElementById("text");
+    const timer = document.getElementById("timer");
+    let endpoint = "http://127.0.0.1:8502";
+    let recorder = null, stream = null, chunks = [], listening = false;
+    let transcript = "", startedAt = 0, ticker = null, pulse = null, requestBusy = false;
+
+    function draw() {
+      text.textContent = transcript.trim() || "你说的话会在这里实时出现";
+      text.classList.toggle("placeholder", !transcript.trim());
+    }
+    function stopTimers() { clearInterval(ticker); clearInterval(pulse); ticker = null; pulse = null; }
+    function beginTimers() {
+      startedAt = Date.now(); stopTimers();
+      ticker = setInterval(() => {
+        const seconds = Math.floor((Date.now() - startedAt) / 1000);
+        timer.textContent = `${String(Math.floor(seconds/60)).padStart(2,"0")}:${String(seconds%60).padStart(2,"0")}`;
+      }, 250);
+      pulse = setInterval(() => transcribe(false), 2200);
+    }
+    async function transcribe(final=false) {
+      if (requestBusy) { if (final) setTimeout(() => transcribe(true), 250); return; }
+      if (chunks.length === 0) return;
+      requestBusy = true;
+      if (!final) status.textContent = "正在本地识别…";
+      try {
+        const blob = new Blob(chunks, {type: recorder?.mimeType || "audio/webm"});
+        const response = await fetch(`${endpoint}/transcribe`, {method:"POST", headers:{"Content-Type":blob.type}, body:blob});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        transcript = data.transcript || transcript; draw();
+        if (!final && listening) status.textContent = "正在听，文字会持续更新…";
+        if (final && transcript.trim()) {
+          status.textContent = "听写完成，已自动填入任务框";
+          send("streamlit:setComponentValue", {value:{transcript:transcript.trim(),nonce:Date.now()},dataType:"json"});
+        }
+      } catch (error) {
+        status.textContent = `本地听写暂时失败：${error.message}`; status.classList.add("error");
+      } finally { requestBusy = false; }
+    }
+    async function start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({audio:true});
+        chunks = []; transcript = ""; draw();
+        const preferred = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+        recorder = new MediaRecorder(stream, {mimeType:preferred});
+        recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+        recorder.onstop = async () => { await transcribe(true); stream?.getTracks().forEach(track => track.stop()); };
+        recorder.start(500); listening = true;
+        status.classList.remove("error"); status.textContent = "正在听，文字会持续更新…";
+        mic.classList.add("live"); mic.textContent = "■"; beginTimers();
+      } catch (error) {
+        status.textContent = `无法使用麦克风：${error.message}`; status.classList.add("error");
+      }
+    }
+    function stop() {
+      listening = false; stopTimers(); mic.classList.remove("live"); mic.textContent = "●";
+      status.textContent = "正在完成最后一次本地识别…";
+      recorder?.requestData(); setTimeout(() => recorder?.stop(), 120);
+    }
+    mic.onclick = () => listening ? stop() : start();
+    addEventListener("message", event => {
+      if (event.data?.type !== "streamlit:render") return;
+      const args = event.data.args || {};
+      endpoint = args.endpoint || endpoint;
+      if (!listening && args.initial_text && !transcript) { transcript = args.initial_text; draw(); }
+    });
+  </script>
+</body>
+</html>
