@@ -8,6 +8,7 @@ from bearbless.agent.vision import (
     VisionAgentError,
     VisionPlanner,
     _alarm_picker_action,
+    _alarm_save_confirmed,
     _alarm_target,
     _ground_alarm_picker_swipe,
     _normalize_model_decision,
@@ -145,6 +146,12 @@ def test_non_alarm_swipe_is_not_rewritten():
 
 def test_alarm_target_parses_half_hour():
     assert _alarm_target("设置明天早上7点半的闹钟") == ("上午", 7, 30)
+
+
+def test_alarm_save_finishes_after_confirm_returns_to_list():
+    history = [{"action": "TAP", "reason": "确认闹钟 上午07:30"}]
+    assert _alarm_save_confirmed("设置早上7点30分闹钟", "闹钟7小时2分钟后响铃", history)
+    assert not _alarm_save_confirmed("设置早上7点30分闹钟", "新建闹钟后响铃", history)
 
 
 def test_alarm_picker_uses_stable_direction_from_current_value(tmp_path: Path):

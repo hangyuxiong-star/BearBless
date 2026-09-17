@@ -129,6 +129,12 @@ def _alarm_target(goal: str) -> tuple[str, int, int] | None:
     return period, hour12, minute
 
 
+def _alarm_save_confirmed(goal: str, grounded_text: str, history: list[dict]) -> bool:
+    if "闹钟" not in goal or "新建闹钟" in grounded_text or "后响铃" not in grounded_text:
+        return False
+    return bool(history and str(history[-1].get("reason") or "").startswith("确认闹钟"))
+
+
 def _blue_score(frame_path: str, bounds: tuple[int, int, int, int]) -> int:
     if not frame_path:
         return 0
@@ -356,6 +362,9 @@ class VisionPlanner:
             "账号验证",
         )
         grounded_text = "".join(item.label.replace(" ", "") for item in grounded.elements)
+        if _alarm_save_confirmed(state.goal, grounded_text, history):
+            state.collected_data["alarm_saved"] = True
+            return [Action(ActionType.FINISH, reason="闹钟已保存，列表显示下次响铃倒计时")]
         if "新建闹钟" in grounded_text and "闹钟" in state.goal:
             picker_action = _alarm_picker_action(
                 state.goal, grounded.elements, self.display_id, frame_path,
