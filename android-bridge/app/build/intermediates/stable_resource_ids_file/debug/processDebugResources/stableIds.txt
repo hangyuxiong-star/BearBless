@@ -1,3 +1,0 @@
-com.bearbless.bridge:xml/accessibility_service_config = 0x7f020000
-com.bearbless.bridge:string/app_name = 0x7f010001
-com.bearbless.bridge:string/accessibility_description = 0x7f010000

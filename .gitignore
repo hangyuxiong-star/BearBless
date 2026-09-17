@@ -5,6 +5,10 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 *.egg-info/
+android-bridge/.gradle/
+android-bridge/build/
+android-bridge/app/build/
+android-bridge/local.properties
 artifacts/doctor/*.json
 artifacts/shadow-test/*.json
 artifacts/shadow-test/*.png
