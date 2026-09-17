@@ -222,6 +222,27 @@ def test_alarm_picker_infers_morning_when_blue_label_is_missing(tmp_path: Path):
     assert "小时 08 调整到 07" in action.reason
 
 
+def test_alarm_picker_taps_measured_confirm_icon_when_values_match(tmp_path: Path):
+    from PIL import Image, ImageDraw
+
+    path = tmp_path / "picker.png"
+    image = Image.new("RGB", (1080, 900), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((170, 535, 270, 605), fill=(20, 90, 245))
+    draw.rectangle((516, 546, 560, 583), fill=(20, 90, 245))
+    draw.rectangle((834, 546, 884, 583), fill=(20, 90, 245))
+    image.save(path)
+    elements = (
+        MarkedElement(1, "上午", (170, 535, 270, 605)),
+        MarkedElement(2, "07", (516, 546, 560, 583)),
+        MarkedElement(3, "30", (834, 546, 884, 583)),
+    )
+    action = _alarm_picker_action("设置早上7点30分闹钟", elements, 96, str(path))
+    assert action is not None
+    assert action.action == ActionType.TAP
+    assert (action.x, action.y) == (980, 232)
+
+
 def test_ambiguous_incomplete_swipe_is_not_invented(tmp_path: Path):
     planner = VisionPlanner(FakeClient({
         "action": "SWIPE", "x": 500, "y": 1200,

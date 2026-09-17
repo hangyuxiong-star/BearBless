@@ -242,7 +242,7 @@ def _alarm_picker_action(
             capability=ActionCapability.CHANGE_SETTING,
         )
     return Action(
-        ActionType.TAP, display_id=display_id, x=840, y=195,
+        ActionType.TAP, display_id=display_id, x=980, y=232,
         reason=f"确认闹钟 {target_period}{target_hour:02d}:{target_minute:02d}",
         capability=ActionCapability.CHANGE_SETTING,
     )
