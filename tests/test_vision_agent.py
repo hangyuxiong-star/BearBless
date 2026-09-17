@@ -172,6 +172,20 @@ def test_alarm_picker_switches_to_minute_after_hour_matches():
     assert action.y2 < action.y
 
 
+def test_blue_score_prefers_selected_picker_text(tmp_path: Path):
+    from PIL import Image, ImageDraw
+    from bearbless.agent.vision import _blue_score
+
+    path = tmp_path / "picker.png"
+    image = Image.new("RGB", (100, 50), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((10, 10, 30, 30), fill=(20, 90, 245))
+    draw.rectangle((60, 10, 80, 30), fill=(20, 20, 20))
+    image.save(path)
+    assert _blue_score(str(path), (10, 10, 31, 31)) > 0
+    assert _blue_score(str(path), (60, 10, 81, 31)) == 0
+
+
 def test_ambiguous_incomplete_swipe_is_not_invented(tmp_path: Path):
     planner = VisionPlanner(FakeClient({
         "action": "SWIPE", "x": 500, "y": 1200,

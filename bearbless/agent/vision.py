@@ -8,6 +8,8 @@ import re
 from collections.abc import Callable
 from urllib.request import Request, urlopen
 
+from PIL import Image
+
 from bearbless.agent.state import TaskState
 from bearbless.agent.grounding import SetOfMarkGrounder
 from bearbless.agent.model_client import PhoneModelClient
@@ -127,12 +129,34 @@ def _alarm_target(goal: str) -> tuple[str, int, int] | None:
     return period, hour12, minute
 
 
-def _alarm_picker_action(goal: str, elements, display_id: int) -> Action | None:
+def _blue_score(frame_path: str, bounds: tuple[int, int, int, int]) -> int:
+    if not frame_path:
+        return 0
+    try:
+        with Image.open(frame_path).convert("RGB") as image:
+            crop = image.crop(bounds)
+            pixels = crop.get_flattened_data()
+            return sum(
+                1 for red, green, blue in pixels
+                if blue >= 150 and blue > red * 1.35 and blue > green * 1.15
+            )
+    except (OSError, ValueError):
+        return 0
+
+
+def _alarm_picker_action(
+    goal: str, elements, display_id: int, frame_path: str = "",
+) -> Action | None:
     """Drive a visible Huawei alarm picker from OCR instead of model guesses."""
     target = _alarm_target(goal)
-    period_item = next(
-        (item for item in elements if item.label.replace(" ", "") in {"上午", "下午"}),
-        None,
+    period_candidates = [
+        item for item in elements
+        if item.label.replace(" ", "") in {"上午", "下午"}
+    ]
+    period_item = max(
+        period_candidates,
+        key=lambda item: _blue_score(frame_path, item.bounds),
+        default=None,
     )
     if target is None or period_item is None:
         return None
@@ -142,8 +166,18 @@ def _alarm_picker_action(goal: str, elements, display_id: int) -> Action | None:
         if re.fullmatch(r"\d{1,2}", item.label.strip())
         and abs(item.center[1] - selected_y) <= 65
     ]
-    hour_item = min(numbers, key=lambda item: abs(item.center[0] - 540), default=None)
-    minute_item = min(numbers, key=lambda item: abs(item.center[0] - 858), default=None)
+    hour_candidates = [item for item in numbers if abs(item.center[0] - 540) < 140]
+    minute_candidates = [item for item in numbers if abs(item.center[0] - 858) < 140]
+    hour_item = max(
+        hour_candidates,
+        key=lambda item: (_blue_score(frame_path, item.bounds), -abs(item.center[1] - selected_y)),
+        default=None,
+    )
+    minute_item = max(
+        minute_candidates,
+        key=lambda item: (_blue_score(frame_path, item.bounds), -abs(item.center[1] - selected_y)),
+        default=None,
+    )
     if hour_item is None or minute_item is None:
         return None
     try:
@@ -302,7 +336,9 @@ class VisionPlanner:
         )
         grounded_text = "".join(item.label.replace(" ", "") for item in grounded.elements)
         if "新建闹钟" in grounded_text and "闹钟" in state.goal:
-            picker_action = _alarm_picker_action(state.goal, grounded.elements, self.display_id)
+            picker_action = _alarm_picker_action(
+                state.goal, grounded.elements, self.display_id, frame_path,
+            )
             if picker_action is not None:
                 return [picker_action]
         verification_markers = (
