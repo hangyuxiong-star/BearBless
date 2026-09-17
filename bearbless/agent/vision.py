@@ -12,7 +12,7 @@ from bearbless.agent.state import TaskState
 from bearbless.agent.grounding import SetOfMarkGrounder
 from bearbless.agent.model_client import PhoneModelClient
 from bearbless.runtime.commands import CommandRunner
-from bearbless.runtime.actions import Action, ActionType
+from bearbless.runtime.actions import Action, ActionCapability, ActionType
 from bearbless.errors import AgentTerminalDecision, ModelProtocolError
 from bearbless.schemas import AgentAction, PhoneDecision, VerificationResult
 
@@ -98,7 +98,7 @@ def _ground_alarm_picker_swipe(
         raw_y2 = int(decision.get("y2"))
     except (TypeError, ValueError):
         return decision
-    columns = (int(width * .167), int(width * .426), int(width * .681))
+    columns = (int(width * .204), int(width * .5), int(width * .794))
     column_x = min(columns, key=lambda candidate: abs(candidate - raw_x))
     center_y = int(height * .21)
     row_step = max(90, int(height * .05))
@@ -111,6 +111,86 @@ def _ground_alarm_picker_swipe(
         "y2": center_y + direction * row_step,
         "duration_ms": 320,
     }
+
+
+def _alarm_target(goal: str) -> tuple[str, int, int] | None:
+    match = re.search(r"(\d{1,2})\s*点\s*(半|\d{1,2})?", goal)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute_text = match.group(2) or "0"
+    minute = 30 if minute_text == "半" else int(minute_text)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    period = "下午" if hour >= 12 and hour != 24 else "上午"
+    hour12 = hour % 12 or 12
+    return period, hour12, minute
+
+
+def _alarm_picker_action(goal: str, elements, display_id: int) -> Action | None:
+    """Drive a visible Huawei alarm picker from OCR instead of model guesses."""
+    target = _alarm_target(goal)
+    period_item = next(
+        (item for item in elements if item.label.replace(" ", "") in {"上午", "下午"}),
+        None,
+    )
+    if target is None or period_item is None:
+        return None
+    selected_y = period_item.center[1]
+    numbers = [
+        item for item in elements
+        if re.fullmatch(r"\d{1,2}", item.label.strip())
+        and abs(item.center[1] - selected_y) <= 65
+    ]
+    hour_item = min(numbers, key=lambda item: abs(item.center[0] - 540), default=None)
+    minute_item = min(numbers, key=lambda item: abs(item.center[0] - 858), default=None)
+    if hour_item is None or minute_item is None:
+        return None
+    try:
+        current_hour = int(hour_item.label)
+        current_minute = int(minute_item.label)
+    except ValueError:
+        return None
+    target_period, target_hour, target_minute = target
+    row_step = 120
+    if period_item.label.replace(" ", "") != target_period:
+        move_down = target_period == "上午"
+        return Action(
+            ActionType.SWIPE, display_id=display_id,
+            x=220, y=selected_y, x2=220,
+            y2=selected_y + (row_step if move_down else -row_step),
+            duration_ms=320, reason=f"切换到{target_period}",
+            capability=ActionCapability.CHANGE_SETTING,
+        )
+    if current_hour != target_hour:
+        forward = (target_hour - current_hour) % 12
+        backward = (current_hour - target_hour) % 12
+        increase = forward <= backward
+        return Action(
+            ActionType.SWIPE, display_id=display_id,
+            x=540, y=selected_y, x2=540,
+            y2=selected_y + (-row_step if increase else row_step),
+            duration_ms=320,
+            reason=f"小时 {current_hour:02d} 调整到 {target_hour:02d}",
+            capability=ActionCapability.CHANGE_SETTING,
+        )
+    if current_minute != target_minute:
+        forward = (target_minute - current_minute) % 60
+        backward = (current_minute - target_minute) % 60
+        increase = forward <= backward
+        return Action(
+            ActionType.SWIPE, display_id=display_id,
+            x=858, y=selected_y, x2=858,
+            y2=selected_y + (-row_step if increase else row_step),
+            duration_ms=320,
+            reason=f"分钟 {current_minute:02d} 调整到 {target_minute:02d}",
+            capability=ActionCapability.CHANGE_SETTING,
+        )
+    return Action(
+        ActionType.TAP, display_id=display_id, x=840, y=195,
+        reason=f"确认闹钟 {target_period}{target_hour:02d}:{target_minute:02d}",
+        capability=ActionCapability.CHANGE_SETTING,
+    )
 
 
 def _json_object(text: str) -> dict:
@@ -221,6 +301,10 @@ class VisionPlanner:
             "账号验证",
         )
         grounded_text = "".join(item.label.replace(" ", "") for item in grounded.elements)
+        if "新建闹钟" in grounded_text and "闹钟" in state.goal:
+            picker_action = _alarm_picker_action(state.goal, grounded.elements, self.display_id)
+            if picker_action is not None:
+                return [picker_action]
         verification_markers = (
             "人机验证", "滑块验证", "滑动滑块", "向右滑动", "安全验证", "完成验证",
         )

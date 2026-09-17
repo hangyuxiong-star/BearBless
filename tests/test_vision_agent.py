@@ -7,6 +7,8 @@ from bearbless.agent.grounding import GroundedScreen, MarkedElement
 from bearbless.agent.vision import (
     VisionAgentError,
     VisionPlanner,
+    _alarm_picker_action,
+    _alarm_target,
     _ground_alarm_picker_swipe,
     _normalize_model_decision,
 )
@@ -131,14 +133,43 @@ def test_alarm_picker_swipe_snaps_to_column_and_one_row():
         "新建闹钟上午0700",
     )
     assert decision == {
-        "action": "SWIPE", "x": 460, "y": 504,
-        "x2": 460, "y2": 624, "duration_ms": 320,
+        "action": "SWIPE", "x": 540, "y": 504,
+        "x2": 540, "y2": 624, "duration_ms": 320,
     }
 
 
 def test_non_alarm_swipe_is_not_rewritten():
     original = {"action": "SWIPE", "x": 533, "y": 470, "x2": 533, "y2": 1600}
     assert _ground_alarm_picker_swipe(original, "网易云音乐") == original
+
+
+def test_alarm_target_parses_half_hour():
+    assert _alarm_target("设置明天早上7点半的闹钟") == ("上午", 7, 30)
+
+
+def test_alarm_picker_uses_stable_direction_from_current_value():
+    elements = (
+        MarkedElement(1, "上午", (170, 535, 270, 605)),
+        MarkedElement(2, "11", (516, 546, 560, 583)),
+        MarkedElement(3, "15", (834, 546, 884, 583)),
+    )
+    action = _alarm_picker_action("设置早上7点30分闹钟", elements, 91)
+    assert action is not None
+    assert action.x == action.x2 == 540
+    assert action.y2 > action.y
+    assert "11 调整到 07" in action.reason
+
+
+def test_alarm_picker_switches_to_minute_after_hour_matches():
+    elements = (
+        MarkedElement(1, "上午", (170, 535, 270, 605)),
+        MarkedElement(2, "07", (516, 546, 560, 583)),
+        MarkedElement(3, "15", (834, 546, 884, 583)),
+    )
+    action = _alarm_picker_action("设置早上7点30分闹钟", elements, 91)
+    assert action is not None
+    assert action.x == action.x2 == 858
+    assert action.y2 < action.y
 
 
 def test_ambiguous_incomplete_swipe_is_not_invented(tmp_path: Path):
