@@ -147,26 +147,42 @@ def test_alarm_target_parses_half_hour():
     assert _alarm_target("设置明天早上7点半的闹钟") == ("上午", 7, 30)
 
 
-def test_alarm_picker_uses_stable_direction_from_current_value():
+def test_alarm_picker_uses_stable_direction_from_current_value(tmp_path: Path):
+    from PIL import Image, ImageDraw
+    path = tmp_path / "picker.png"
+    image = Image.new("RGB", (1080, 900), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((170, 535, 270, 605), fill=(20, 90, 245))
+    draw.rectangle((516, 546, 560, 583), fill=(20, 90, 245))
+    draw.rectangle((834, 546, 884, 583), fill=(20, 90, 245))
+    image.save(path)
     elements = (
         MarkedElement(1, "上午", (170, 535, 270, 605)),
         MarkedElement(2, "11", (516, 546, 560, 583)),
         MarkedElement(3, "15", (834, 546, 884, 583)),
     )
-    action = _alarm_picker_action("设置早上7点30分闹钟", elements, 91)
+    action = _alarm_picker_action("设置早上7点30分闹钟", elements, 91, str(path))
     assert action is not None
     assert action.x == action.x2 == 540
     assert action.y2 > action.y
     assert "11 调整到 07" in action.reason
 
 
-def test_alarm_picker_switches_to_minute_after_hour_matches():
+def test_alarm_picker_switches_to_minute_after_hour_matches(tmp_path: Path):
+    from PIL import Image, ImageDraw
+    path = tmp_path / "picker.png"
+    image = Image.new("RGB", (1080, 900), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((170, 535, 270, 605), fill=(20, 90, 245))
+    draw.rectangle((516, 546, 560, 583), fill=(20, 90, 245))
+    draw.rectangle((834, 546, 884, 583), fill=(20, 90, 245))
+    image.save(path)
     elements = (
         MarkedElement(1, "上午", (170, 535, 270, 605)),
         MarkedElement(2, "07", (516, 546, 560, 583)),
         MarkedElement(3, "15", (834, 546, 884, 583)),
     )
-    action = _alarm_picker_action("设置早上7点30分闹钟", elements, 91)
+    action = _alarm_picker_action("设置早上7点30分闹钟", elements, 91, str(path))
     assert action is not None
     assert action.x == action.x2 == 858
     assert action.y2 < action.y
@@ -184,6 +200,26 @@ def test_blue_score_prefers_selected_picker_text(tmp_path: Path):
     image.save(path)
     assert _blue_score(str(path), (10, 10, 31, 31)) > 0
     assert _blue_score(str(path), (60, 10, 81, 31)) == 0
+
+
+def test_alarm_picker_infers_morning_when_blue_label_is_missing(tmp_path: Path):
+    from PIL import Image, ImageDraw
+
+    path = tmp_path / "picker.png"
+    image = Image.new("RGB", (1080, 900), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((516, 546, 560, 583), fill=(20, 90, 245))
+    draw.rectangle((834, 546, 884, 583), fill=(20, 90, 245))
+    image.save(path)
+    elements = (
+        MarkedElement(1, "08", (516, 546, 560, 583)),
+        MarkedElement(2, "19", (834, 546, 884, 583)),
+        MarkedElement(3, "下 午", (181, 629, 268, 714)),
+    )
+    action = _alarm_picker_action("设置早上7点30分闹钟", elements, 95, str(path))
+    assert action is not None
+    assert action.x == action.x2 == 540
+    assert "小时 08 调整到 07" in action.reason
 
 
 def test_ambiguous_incomplete_swipe_is_not_invented(tmp_path: Path):

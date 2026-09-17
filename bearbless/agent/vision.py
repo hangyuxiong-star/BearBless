@@ -153,19 +153,22 @@ def _alarm_picker_action(
         item for item in elements
         if item.label.replace(" ", "") in {"上午", "下午"}
     ]
-    period_item = max(
-        period_candidates,
+    if target is None or not period_candidates:
+        return None
+    all_numbers = [
+        item for item in elements
+        if re.fullmatch(r"\d{1,2}", item.label.strip())
+    ]
+    all_hour_candidates = [item for item in all_numbers if abs(item.center[0] - 540) < 140]
+    selected_hour = max(
+        all_hour_candidates,
         key=lambda item: _blue_score(frame_path, item.bounds),
         default=None,
     )
-    if target is None or period_item is None:
+    if selected_hour is None or _blue_score(frame_path, selected_hour.bounds) == 0:
         return None
-    selected_y = period_item.center[1]
-    numbers = [
-        item for item in elements
-        if re.fullmatch(r"\d{1,2}", item.label.strip())
-        and abs(item.center[1] - selected_y) <= 65
-    ]
+    selected_y = selected_hour.center[1]
+    numbers = [item for item in all_numbers if abs(item.center[1] - selected_y) <= 65]
     hour_candidates = [item for item in numbers if abs(item.center[0] - 540) < 140]
     minute_candidates = [item for item in numbers if abs(item.center[0] - 858) < 140]
     hour_item = max(
@@ -186,8 +189,26 @@ def _alarm_picker_action(
     except ValueError:
         return None
     target_period, target_hour, target_minute = target
+    blue_period = max(
+        period_candidates,
+        key=lambda item: _blue_score(frame_path, item.bounds),
+        default=None,
+    )
+    if blue_period is not None and _blue_score(frame_path, blue_period.bounds) > 0:
+        current_period = blue_period.label.replace(" ", "")
+    else:
+        # Huawei's blue Chinese glyphs are occasionally omitted by OCR.  The
+        # other period remains visible immediately above/below the blue row.
+        above = {item.label.replace(" ", "") for item in period_candidates if item.center[1] < selected_y}
+        below = {item.label.replace(" ", "") for item in period_candidates if item.center[1] > selected_y}
+        if "下午" in below:
+            current_period = "上午"
+        elif "上午" in above:
+            current_period = "下午"
+        else:
+            return None
     row_step = 120
-    if period_item.label.replace(" ", "") != target_period:
+    if current_period != target_period:
         move_down = target_period == "上午"
         return Action(
             ActionType.SWIPE, display_id=display_id,
