@@ -4,7 +4,12 @@ import pytest
 
 from bearbless.agent.state import TaskState
 from bearbless.agent.grounding import GroundedScreen, MarkedElement
-from bearbless.agent.vision import VisionAgentError, VisionPlanner, _normalize_model_decision
+from bearbless.agent.vision import (
+    VisionAgentError,
+    VisionPlanner,
+    _ground_alarm_picker_swipe,
+    _normalize_model_decision,
+)
 from bearbless.errors import AgentTerminalDecision
 from bearbless.runtime.actions import ActionType
 
@@ -118,6 +123,22 @@ def test_picker_swipe_preserves_column_and_uses_short_drag():
     })
     assert decision["x2"] == 730
     assert decision["y2"] == 710
+
+
+def test_alarm_picker_swipe_snaps_to_column_and_one_row():
+    decision = _ground_alarm_picker_swipe(
+        {"action": "SWIPE", "x": 533, "y": 470, "x2": 533, "y2": 1600},
+        "新建闹钟上午0700",
+    )
+    assert decision == {
+        "action": "SWIPE", "x": 460, "y": 504,
+        "x2": 460, "y2": 624, "duration_ms": 320,
+    }
+
+
+def test_non_alarm_swipe_is_not_rewritten():
+    original = {"action": "SWIPE", "x": 533, "y": 470, "x2": 533, "y2": 1600}
+    assert _ground_alarm_picker_swipe(original, "网易云音乐") == original
 
 
 def test_ambiguous_incomplete_swipe_is_not_invented(tmp_path: Path):

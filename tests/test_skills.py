@@ -15,6 +15,13 @@ def test_registry_adds_thin_semantic_skill_without_app_name():
     assert names == ["general_gui", "alarm_management"]
 
 
+def test_alarm_skill_describes_picker_column_grounding():
+    skills = SkillRegistry(Adb()).resolve("设置明天早上七点半的闹钟")
+    alarm = next(skill for skill in skills if skill.name == "alarm_management")
+    assert "x=180、460、735" in alarm.instruction
+    assert "严禁在两列之间滑动" in alarm.instruction
+
+
 def test_media_skill_owns_deterministic_completion_probe():
     registry = SkillRegistry(Adb())
     selected = registry.resolve("播放歌曲银河赴约")

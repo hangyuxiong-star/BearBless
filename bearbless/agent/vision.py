@@ -86,6 +86,33 @@ def _normalize_model_decision(raw: dict, width: int = 1080, height: int = 2400) 
     return decision
 
 
+def _ground_alarm_picker_swipe(
+    decision: dict, grounded_text: str, *, width: int = 1080, height: int = 2400,
+) -> dict:
+    """Snap Huawei alarm-picker gestures to one real column and one row."""
+    if decision.get("action") != "SWIPE" or "新建闹钟" not in grounded_text:
+        return decision
+    try:
+        raw_x = int(decision.get("x"))
+        raw_y = int(decision.get("y"))
+        raw_y2 = int(decision.get("y2"))
+    except (TypeError, ValueError):
+        return decision
+    columns = (int(width * .167), int(width * .426), int(width * .681))
+    column_x = min(columns, key=lambda candidate: abs(candidate - raw_x))
+    center_y = int(height * .21)
+    row_step = max(90, int(height * .05))
+    direction = 1 if raw_y2 > raw_y else -1
+    return {
+        **decision,
+        "x": column_x,
+        "x2": column_x,
+        "y": center_y,
+        "y2": center_y + direction * row_step,
+        "duration_ms": 320,
+    }
+
+
 def _json_object(text: str) -> dict:
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I | re.S)
     try:
@@ -291,6 +318,7 @@ REPORT 代表整个用户目标已经完成，不是当前子步骤完成。必�
         # and for deterministic safety checks only.
         model_frame = frame_path if getattr(self.client, "native_tool_protocol", False) else str(grounded.annotated_path)
         raw_decision = _normalize_model_decision(self.client.complete(prompt, model_frame))
+        raw_decision = _ground_alarm_picker_swipe(raw_decision, grounded_text)
         if raw_decision.get("action") == "CLICK_ELEMENT":
             raw_element_id = raw_decision.get("element_id")
             if isinstance(raw_element_id, str) and not raw_element_id.strip().isdigit():
