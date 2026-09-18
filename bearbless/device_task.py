@@ -19,6 +19,7 @@ from bearbless.runtime.actions import Action, ActionType
 from bearbless.runtime.packages import list_installed_packages, resolve_browser_package, resolve_explicit_app_alias
 from bearbless.runtime.user_attention import UserAttentionNotifier, login_takeover_required
 from bearbless.runtime.monitor import Event
+from bearbless.runtime.netease_music import resolve_netease_song_uri
 from bearbless.schemas import ExpectedOutcome, SuccessCriterion, TaskSpec
 from datetime import datetime, timezone
 
@@ -54,13 +55,39 @@ def run_general_device_task(goal: str, task_spec: TaskSpec | None = None) -> Tas
     package = resolve_explicit_app_alias(goal, bootstrap_adb)
     if package is None:
         package = client.select_package(goal, list_installed_packages(bootstrap_adb))
+    # NetEase's search Activity auto-focuses its text field and Android routes
+    # the singleton IME to Display 0.  Prefer a verified exact-title lookup and
+    # official app deep link; fall back to the generic visual loop if lookup
+    # is unavailable.
+    app_uri = resolve_netease_song_uri(goal) if package == "com.netease.cloudmusic" else None
     bundle = RuntimeBundle(config, task_id)
     allowed_packages = {"任务目标应用": package}
     try:
         primary_before = bundle.monitor.snapshot(monotonic_time=time.monotonic())
         display_id = bundle.display.ensure(package)
         state.shadow_display_id = display_id
+        bundle.monitor.metrics.shadow_display_id = display_id
+        if app_uri:
+            state.collected_data["app_skill_route"] = "netease_exact_song_deep_link"
+            bundle.display.launch_app(package, app_uri)
         primary_after = bundle.monitor.snapshot(monotonic_time=time.monotonic())
+        if (
+            primary_before.ime_visible is not True
+            and primary_after.ime_visible is True
+            and primary_after.ime_target_display_id == 0
+        ):
+            bundle.monitor.metrics.ime_policy_violations += 1
+            bundle.monitor.metrics.isolation_violations += 1
+            bundle.monitor.metrics.task_status = "FAILED"
+            bundle.monitor.record(Event(
+                datetime.now(timezone.utc).isoformat(),
+                "system",
+                0,
+                "startup_ime_isolation_violation",
+                {"target": package, "route": app_uri or "launcher"},
+                "blocked",
+            ))
+            raise RuntimeError("shadow launch caused the system IME to appear on Display 0")
         if primary_after.primary_package == package:
             bundle.monitor.metrics.agent_actions_targeting_primary_display += 1
             bundle.monitor.metrics.primary_display_agent_package_leaks += 1

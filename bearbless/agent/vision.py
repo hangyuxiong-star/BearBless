@@ -15,6 +15,7 @@ from bearbless.agent.grounding import SetOfMarkGrounder
 from bearbless.agent.model_client import PhoneModelClient
 from bearbless.runtime.commands import CommandRunner
 from bearbless.runtime.actions import Action, ActionCapability, ActionType
+from bearbless.runtime.media_session import requested_track
 from bearbless.errors import AgentTerminalDecision, ModelProtocolError
 from bearbless.schemas import AgentAction, PhoneDecision, VerificationResult
 
@@ -133,6 +134,55 @@ def _alarm_save_confirmed(goal: str, grounded_text: str, history: list[dict]) ->
     if "闹钟" not in goal or "新建闹钟" in grounded_text or "后响铃" not in grounded_text:
         return False
     return bool(history and str(history[-1].get("reason") or "").startswith("确认闹钟"))
+
+
+def _music_search_action(goal: str, elements, display_id: int) -> Action | None:
+    """Use semantic screen state for the high-frequency music search path.
+
+    This is only a safe visual fallback after semantic deep-link resolution.
+    NetEase auto-focuses its search field, so entering that flow would route
+    Android's singleton IME to Display 0 and must fail closed.
+    """
+    target = requested_track(goal)
+    if not target or "播放" not in goal or not any(name in goal for name in ("网易云", "音乐")):
+        return None
+    normalized_target = target.replace(" ", "")
+    labels = [(item, item.label.replace(" ", "")) for item in elements]
+    page_text = "".join(label for _, label in labels)
+
+    # Search results: prefer the first full result row, not query suggestions.
+    result_candidates = [
+        item for item, label in labels
+        if normalized_target in label
+        and item.center[1] > 260
+        and ("网易云音乐" in label or len(label) > len(normalized_target) + 4)
+    ]
+    if result_candidates:
+        selected = min(result_candidates, key=lambda item: item.center[1])
+        x, y = selected.center
+        return Action(
+            ActionType.TAP, display_id=display_id, x=x, y=y,
+            capability=ActionCapability.MEDIA_CONTROL,
+            reason=f"点击精确匹配的歌曲结果 {target}",
+        )
+
+    # NetEase focuses this field itself.  ACTION_SET_TEXT does not undo that
+    # focus and therefore cannot prevent the singleton IME from reaching the
+    # primary display.
+    if "搜索历史" in page_text or all(marker in page_text for marker in ("歌手", "曲风", "专区")):
+        raise AgentTerminalDecision(
+            "ABORT",
+            "网易云搜索页会把系统输入法映射到 Display 0；歌曲深链解析失败，已安全停止",
+        )
+
+    if "推荐" in page_text:
+        raise AgentTerminalDecision(
+            "ABORT",
+            "网易云歌曲深链解析失败；为避免搜索框唤起 Display 0 输入法，已安全停止",
+        )
+    if "网易云音乐支持" in page_text:
+        return Action(ActionType.WAIT, display_id=display_id, seconds=1, reason="等待网易云首页完成加载")
+    return None
 
 
 def _blue_score(frame_path: str, bounds: tuple[int, int, int, int]) -> int:
@@ -365,6 +415,9 @@ class VisionPlanner:
         if _alarm_save_confirmed(state.goal, grounded_text, history):
             state.collected_data["alarm_saved"] = True
             return [Action(ActionType.FINISH, reason="闹钟已保存，列表显示下次响铃倒计时")]
+        music_action = _music_search_action(state.goal, grounded.elements, self.display_id)
+        if music_action is not None:
+            return [music_action]
         if "新建闹钟" in grounded_text and "闹钟" in state.goal:
             picker_action = _alarm_picker_action(
                 state.goal, grounded.elements, self.display_id, frame_path,
@@ -435,7 +488,7 @@ Selected skill guidance:\n{skill_context or '- general GUI capability only'}
 Previous actions: {json.dumps(history, ensure_ascii=False)}
 Last deterministic check: {json.dumps(state.collected_data.get('last_step_outcome', {}), ensure_ascii=False)}
 The target app is already open on an isolated secondary display. Never use action=open. Do only one next action.
-The on-screen keyboard is intentionally hidden to protect the user's primary display. For non-ASCII search terms, first click an exact visible history item, suggestion, category or result matching the instruction. Do not use action=type for Chinese text. If no semantically correct visible target exists and Chinese input is required, use interact for human takeover. ASCII text may use action=type.
+Never tap an already-open text field: focusing it can leak the system IME onto Display 0. action=type uses a display-scoped Accessibility node, but an app that auto-focuses its field can still summon the singleton IME; BearBless will fail closed if that happens. For login, verification, or a non-standard editor use interact.
 For login, password or verification code use interact. Do not purchase, pay, send messages, delete data or press Home unless explicitly authorized by the task contract.
 Use terminate success only after every required success criterion is visibly satisfied."""
         else:

@@ -19,6 +19,7 @@ class DeviceState:
     primary_package: str | None
     primary_activity: str | None
     ime_target_display_id: int | None
+    ime_visible: bool | None = None
 
 
 @dataclass
@@ -130,6 +131,7 @@ class DeviceMonitor:
         return DeviceState(
             datetime.now(timezone.utc).isoformat(), monotonic_time, package, activity,
             ime_state["target_display_id"] if isinstance(ime_state["target_display_id"], int) else None,
+            ime_state["visible"] if isinstance(ime_state["visible"], bool) else None,
         )
 
     def record_agent_action(self, action: Action, result: str, payload: dict[str, Any] | None = None) -> None:
@@ -157,11 +159,24 @@ class DeviceMonitor:
             self.metrics.primary_display_agent_package_leaks += 1
         elif attribution.kind == "unattributed_change":
             self.metrics.unattributed_primary_display_changes += 1
-        if after.ime_target_display_id == 0 and action.display_id == shadow_display_id and action.text is not None:
+        ime_leaked_to_primary = bool(
+            action.display_id == shadow_display_id
+            and after.ime_target_display_id == 0
+            and after.ime_visible is True
+            and before.ime_visible is not True
+        )
+        if ime_leaked_to_primary:
             self.metrics.ime_policy_violations += 1
         self.record(Event(
             datetime.now(timezone.utc).isoformat(), "monitor", 0, "isolation_assessment",
-            {"attribution": attribution.kind, "reason": attribution.reason}, attribution.kind,
+            {
+                "attribution": attribution.kind,
+                "reason": attribution.reason,
+                "ime_before_visible": before.ime_visible,
+                "ime_after_visible": after.ime_visible,
+                "ime_after_display_id": after.ime_target_display_id,
+                "ime_leaked_to_primary": ime_leaked_to_primary,
+            }, attribution.kind,
         ))
         return attribution
 

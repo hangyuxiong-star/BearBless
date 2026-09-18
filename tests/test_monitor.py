@@ -4,8 +4,8 @@ from bearbless.runtime.actions import Action, ActionType
 from bearbless.runtime.monitor import DeviceState, DeviceMonitor, EventStore, attribute_primary_change
 
 
-def state(package: str, when: float) -> DeviceState:
-    return DeviceState("2026-01-01T00:00:00+00:00", when, package, ".Main", 8)
+def state(package: str, when: float, *, ime_display: int = 8, ime_visible: bool = False) -> DeviceState:
+    return DeviceState("2026-01-01T00:00:00+00:00", when, package, ".Main", ime_display, ime_visible)
 
 
 def test_attribution_detects_agent_package_leak() -> None:
@@ -35,3 +35,27 @@ def test_monitor_persists_timeline_and_metrics(tmp_path) -> None:
     assert monitor.metrics.isolation_violations == 1
     assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 2
     assert json.loads((tmp_path / "metrics.json").read_text())["agent_actions_targeting_primary_display"] == 0
+
+
+def test_monitor_detects_primary_ime_leak_after_shadow_tap() -> None:
+    monitor = DeviceMonitor(None)
+    action = Action(ActionType.TAP, display_id=8, x=100, y=200)
+    monitor.assess(
+        state("com.human", 1, ime_visible=False),
+        state("com.human", 2, ime_display=0, ime_visible=True),
+        action,
+        shadow_display_id=8,
+    )
+    assert monitor.metrics.ime_policy_violations == 1
+
+
+def test_existing_user_keyboard_is_not_attributed_to_agent() -> None:
+    monitor = DeviceMonitor(None)
+    action = Action(ActionType.TAP, display_id=8, x=100, y=200)
+    monitor.assess(
+        state("com.human", 1, ime_display=0, ime_visible=True),
+        state("com.human", 2, ime_display=0, ime_visible=True),
+        action,
+        shadow_display_id=8,
+    )
+    assert monitor.metrics.ime_policy_violations == 0

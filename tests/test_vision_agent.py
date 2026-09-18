@@ -12,6 +12,7 @@ from bearbless.agent.vision import (
     _alarm_target,
     _ground_alarm_picker_swipe,
     _normalize_model_decision,
+    _music_search_action,
 )
 from bearbless.errors import AgentTerminalDecision
 from bearbless.runtime.actions import ActionType
@@ -142,6 +143,29 @@ def test_alarm_picker_swipe_snaps_to_column_and_one_row():
 def test_non_alarm_swipe_is_not_rewritten():
     original = {"action": "SWIPE", "x": 533, "y": 470, "x2": 533, "y2": 1600}
     assert _ground_alarm_picker_swipe(original, "网易云音乐") == original
+
+
+def test_music_search_page_fails_closed_instead_of_leaking_ime():
+    elements = (
+        MarkedElement(1, "搜索", (900, 180, 1040, 240)),
+        MarkedElement(2, "歌手", (100, 280, 220, 350)),
+        MarkedElement(3, "曲风", (350, 280, 480, 350)),
+        MarkedElement(4, "专区", (630, 280, 750, 350)),
+        MarkedElement(5, "搜索历史", (40, 400, 190, 460)),
+    )
+    with pytest.raises(AgentTerminalDecision, match="Display 0"):
+        _music_search_action("打开网易云音乐，播放歌曲银河赴约", elements, 74)
+
+
+def test_music_results_tap_exact_full_result():
+    elements = (
+        MarkedElement(1, "银河赴约", (40, 500, 250, 550)),
+        MarkedElement(2, "银河赴约 网易云音乐校园 CMJ", (190, 310, 700, 420)),
+    )
+    action = _music_search_action("打开网易云音乐，播放歌曲银河赴约", elements, 74)
+    assert action is not None
+    assert action.action == ActionType.TAP
+    assert action.y == 365
 
 
 def test_alarm_target_parses_half_hour():

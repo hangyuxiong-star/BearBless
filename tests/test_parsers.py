@@ -22,3 +22,16 @@ def test_capability_and_state_parsers() -> None:
     assert not supports_display_targeted_input("Usage: input <command>")
     assert parse_wm_size("Physical size: 1080x2340\nOverride size: 720x1560") == "720x1560"
     assert parse_ime_state("mCurTokenDisplayId=8 mCurToken=abc")["target_display_id"] == 8
+
+
+def test_ime_parser_ignores_historical_display_ids_and_reads_visibility() -> None:
+    text = """Client ClientState{x displayId=91}:
+  mCurToken=android.os.Binder@abc
+  mCurTokenDisplayId=0
+  mShowRequested=true mInputShown=true
+  StartInput #1: targetDisplayId=91
+  mIsInputViewShown=false
+"""
+    parsed = parse_ime_state(text)
+    assert parsed["target_display_id"] == 0
+    assert parsed["visible"] is True

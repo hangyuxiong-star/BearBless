@@ -36,12 +36,19 @@ def parse_wm_size(text: str) -> str | None:
 
 
 def parse_ime_state(text: str) -> dict[str, object]:
-    display_matches = re.findall(r"(?:displayId|mCurTokenDisplayId|targetDisplayId)\s*[=:]\s*(\d+)", text)
-    token_match = re.search(r"(?:mCurToken|focusedWindow)\s*[=:]\s*([^\s]+)", text)
+    # Only use the current InputMethodManager fields.  A dumpsys also contains
+    # hundreds of historical/client ``displayId`` values; taking the last one
+    # silently reports an arbitrary stale virtual display.
+    display_match = re.search(r"^\s*mCurTokenDisplayId\s*[=:]\s*(\d+)", text, re.MULTILINE)
+    token_match = re.search(r"^\s*mCurToken\s*[=:]\s*([^\s]+)", text, re.MULTILINE)
+    shown_match = re.search(r"\bmInputShown\s*[=:]\s*(true|false)\b", text, re.I)
+    if shown_match is None:
+        shown_match = re.search(r"\bmIsInputViewShown\s*[=:]\s*(true|false)\b", text, re.I)
     return {
-        "target_display_id": int(display_matches[-1]) if display_matches else None,
+        "target_display_id": int(display_match.group(1)) if display_match else None,
         "window_token": token_match.group(1) if token_match else None,
-        "observable": bool(display_matches or token_match),
+        "visible": shown_match.group(1).lower() == "true" if shown_match else None,
+        "observable": bool(display_match or token_match or shown_match),
     }
 
 
