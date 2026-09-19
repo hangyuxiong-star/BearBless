@@ -76,6 +76,13 @@ If required, use the scrcpy video stream/control architecture rather than preten
 ## R6 — Local IME + no clipboard autosync
 The virtual-display launcher must request local IME policy when supported and disable scrcpy clipboard autosync.
 
+“Supported” must be established by an actual capability probe. On the verified
+Huawei ELS-AN00 (Android 12), both `--display-ime-policy=local` and `hide` are
+rejected with `SecurityException: Attempted to set IME policy to an untrusted
+virtual display`. BearBless therefore omits the policy on this target and uses
+IME-free execution plus a terminal Display 0 keyboard guard. It must not infer
+support merely because the scrcpy CLI exposes the option.
+
 The application itself must maintain an in-memory "shadow clipboard" for agent text.
 
 To check IME policy state programmatically (for the doctor command and the monitor), use:
@@ -498,21 +505,26 @@ The rest of the system must be runnable in a deterministic/manual mode without a
 
 Primary live-demo template:
 
-> Find several travel options for a requested route, compare them, choose the best result under the stated constraints, and save a concise recommendation to a note.
+> Play one fixed, rehearsed, account-accessible NetEase song through an exact
+> app deep link while the user continues typing or switching apps on Display 0.
 
 The user must be able to keep using Display 0 during the task.
 
 The task should contain:
 
 ```text
-search
-→ browse
-→ extract
-→ compare
-→ write
-→ re-open/re-observe
-→ verify
+resolve exact title without Android text focus
+→ launch orpheus://song/<id> on the shadow display
+→ observe the player
+→ tap the existing play control
+→ verify exact title and PLAYING through MediaSession
+→ stop immediately
 ```
+
+The primary path must not open an app search page, tap a text field, request an
+input connection, or invoke the system IME. If exact deep-link resolution is
+unavailable, it fails before creating the shadow display. The fixed DSB route
+URL is the non-media backup; open-ended search is not a recording-day fallback.
 
 Do not perform purchases, payments, irreversible submissions or message sending.
 

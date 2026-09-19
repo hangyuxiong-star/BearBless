@@ -9,6 +9,7 @@ class FakeAdb:
         installed = {
             "com.android.settings", "com.netease.cloudmusic",
             "com.huawei.deskclock", "com.autonavi.minimap",
+            "com.wolt.android", "com.tencent.mobileqq",
         }
         return SimpleNamespace(ok=package in installed, stdout=f"package:{package}\n")
 
@@ -25,9 +26,17 @@ def test_huawei_clock_resolves_without_a_model_call():
     assert resolve_explicit_app_alias("打开时钟，设置明早七点的闹钟", FakeAdb()) == "com.huawei.deskclock"
 
 
-def test_generic_map_goal_selects_an_installed_map_without_model_guessing():
-    assert resolve_explicit_app_alias("打开地图导航去公司", FakeAdb()) == "com.autonavi.minimap"
+def test_generic_map_goal_is_not_in_frozen_scope():
+    assert resolve_explicit_app_alias("打开地图导航去公司", FakeAdb()) is None
 
 
 def test_unmentioned_app_does_not_hijack_goal():
     assert resolve_explicit_app_alias("打开相册", FakeAdb()) is None
+
+
+def test_wolt_resolves_without_model_package_guessing():
+    assert resolve_explicit_app_alias("打开wolt帮我找家汉堡店", FakeAdb()) == "com.wolt.android"
+
+
+def test_lowercase_qq_resolves_without_model_package_guessing():
+    assert resolve_explicit_app_alias("打开qq给朋友发消息", FakeAdb()) == "com.tencent.mobileqq"

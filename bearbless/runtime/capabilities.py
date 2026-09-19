@@ -18,6 +18,7 @@ from bearbless.runtime.parsers import (
     supports_display_targeted_input,
 )
 from bearbless.runtime.shadow_display import ShadowDisplay
+from bearbless.runtime.observation_backend import _pixel_fingerprint
 
 
 def verify_display_id_freshness(first_id: int, second_id: int, live_ids: list[int]) -> bool:
@@ -92,7 +93,7 @@ class Doctor:
             checks.update(self._virtual_display_probes())
         else:
             reason = "hardware probes disabled or prerequisites unavailable"
-            for name in ("virtual_display_creation", "virtual_display_id", "secondary_app_launch", "observation", "backend_a_freshness"):
+            for name in ("virtual_display_creation", "virtual_display_id", "secondary_app_launch", "observation", "display_capture_isolation", "backend_a_freshness"):
                 checks[name] = Check("skipped", error=reason)
         checks["clipboard_autosync"] = Check("pass", {"enabled": False, "enforced_by": "--no-clipboard-autosync"})
         return {
@@ -148,6 +149,17 @@ class Doctor:
             output["secondary_app_launch"] = Check("pass", {"package": "com.android.settings", "display_id": first_id})
             capture = self.adb.shell("screencap", "-d", str(first_id), "-p", binary=True)
             output["observation"] = Check("pass" if capture.ok else "unsupported", {"backend": "adb screencap -d", "display_id": first_id}, None if capture.ok else capture.stderr.strip())
+            primary = self.adb.shell("screencap", "-d", "0", "-p", binary=True)
+            distinct = bool(
+                capture.ok and primary.ok
+                and isinstance(capture.stdout, bytes) and isinstance(primary.stdout, bytes)
+                and _pixel_fingerprint(capture.stdout) != _pixel_fingerprint(primary.stdout)
+            )
+            output["display_capture_isolation"] = Check(
+                "pass" if distinct else "fail",
+                {"shadow_display_id": first_id, "primary_display_id": 0, "pixel_surfaces_distinct": distinct},
+                None if distinct else "shadow capture aliases Display 0; mutating actions must remain blocked",
+            )
             first.stop()
             second_id = second.start()
             live_ids = self._list_displays()
@@ -159,7 +171,7 @@ class Doctor:
             )
         except (CommandError, RuntimeError, OSError) as exc:
             output.setdefault("virtual_display_creation", Check("unsupported", error=str(exc)))
-            for name in ("virtual_display_id", "secondary_app_launch", "observation", "backend_a_freshness"):
+            for name in ("virtual_display_id", "secondary_app_launch", "observation", "display_capture_isolation", "backend_a_freshness"):
                 output.setdefault(name, Check("skipped", error="virtual display probe did not complete"))
         finally:
             if first.id is not None:

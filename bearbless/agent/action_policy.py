@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from bearbless.message_intent import extract_confirmed_message
+
 from bearbless.agent.state import TaskState
 from bearbless.errors import PolicyViolation
 from bearbless.runtime.actions import Action, ActionCapability, ActionType
@@ -16,6 +18,7 @@ _READ_ONLY_ALLOWED = {
 }
 _CONFIRMED_MESSAGE_ALLOWED = {
     ActionCapability.NAVIGATE,
+    ActionCapability.READ,
     ActionCapability.SEARCH,
     ActionCapability.ENTER_TEXT,
     ActionCapability.SENSITIVE,
@@ -35,6 +38,9 @@ class TaskActionPolicy:
             )
         mode = state.task_spec.task_mode if state.task_spec else TaskMode.MUTATING_TASK
         capability = action.capability
+        draft_only = any(marker in state.goal for marker in ("草稿", "不用发送", "不要发送", "不发送"))
+        if draft_only and capability == ActionCapability.SENSITIVE:
+            raise PolicyViolation("draft-only QQ task forbids the final send action")
         if capability == ActionCapability.UNKNOWN and action.action in {
             ActionType.OPEN_APP, ActionType.CONDITIONAL_TAP, ActionType.SWIPE, ActionType.BACK,
         }:
@@ -53,13 +59,33 @@ class TaskActionPolicy:
             raise PolicyViolation("sensitive capability is never auto-executed")
         if mode == TaskMode.SENSITIVE_TASK and confirmed:
             scope = str(state.task_spec.constraints.get("sensitive_scope") or state.goal)
+            expected_message = extract_confirmed_message(scope)
+            message_already_staged = any(
+                item.get("action") in {ActionType.TYPE.value, ActionType.TYPE_BOTTOM.value}
+                and item.get("text") == expected_message
+                for item in state.action_history
+            )
+            if (
+                message_already_staged
+                and action.action in {ActionType.TAP, ActionType.CONDITIONAL_TAP, ActionType.CLICK_TEXT}
+                and capability != ActionCapability.SENSITIVE
+            ):
+                raise PolicyViolation(
+                    "after the confirmed message is staged, the next tap must be the sensitive final send"
+                )
             if capability == ActionCapability.SENSITIVE and "发送" not in (action.reason or ""):
                 raise PolicyViolation("sensitive capability is reserved for the explicit final send action")
             if capability == ActionCapability.ENTER_TEXT:
-                match = re.search(r"(?:消息|发消息)\s*[：:]\s*(.+)$", scope)
-                expected = match.group(1).strip() if match else ""
-                if not expected or action.text != expected:
+                expected = expected_message
+                recipient_match = re.search(
+                    r"(?:给|告诉)[‘'\"“]?([^，,：:\s]{1,40})[’'\"”]?(?:发|说|，|,)",
+                    scope,
+                )
+                recipient = recipient_match.group(1) if recipient_match else ""
+                if not expected or action.text not in {expected, recipient}:
                     raise PolicyViolation("message text differs from the user-confirmed original")
+                if action.text == expected and message_already_staged:
+                    raise PolicyViolation("confirmed message has already been staged once")
         if mode == TaskMode.READ_ONLY_QUERY and capability not in _READ_ONLY_ALLOWED:
             if capability == ActionCapability.ENTER_TEXT and self._is_scoped_search_input(state, action):
                 return

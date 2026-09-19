@@ -31,6 +31,7 @@ class MonitorMetrics:
     ime_policy_violations: int = 0
     clipboard_autosync_enabled: bool = False
     isolation_violations: int = 0
+    display_identity_violations: int = 0
     unattributed_primary_display_changes: int = 0
     guard_violations: int = 0
     replans: int = 0
@@ -117,6 +118,10 @@ class DeviceMonitor:
         self.store = store
         self.metrics = MonitorMetrics()
         self.events: list[Event] = []
+        # The IME can appear after the immediate post-action sample and before
+        # the next action starts.  Keep the last sample so that this transition
+        # is still attributed to the preceding shadow-display action.
+        self._last_assessed_after: DeviceState | None = None
 
     def snapshot(self, *, monotonic_time: float) -> DeviceState:
         if self.adb is None:
@@ -159,14 +164,23 @@ class DeviceMonitor:
             self.metrics.primary_display_agent_package_leaks += 1
         elif attribution.kind == "unattributed_change":
             self.metrics.unattributed_primary_display_changes += 1
-        ime_leaked_to_primary = bool(
+        ime_became_visible_after_action = bool(
             action.display_id == shadow_display_id
             and after.ime_target_display_id == 0
             and after.ime_visible is True
             and before.ime_visible is not True
         )
+        ime_appeared_between_actions = bool(
+            action.display_id == shadow_display_id
+            and self._last_assessed_after is not None
+            and self._last_assessed_after.ime_visible is not True
+            and before.ime_visible is True
+            and before.ime_target_display_id == 0
+        )
+        ime_leaked_to_primary = ime_became_visible_after_action or ime_appeared_between_actions
         if ime_leaked_to_primary:
             self.metrics.ime_policy_violations += 1
+            self.metrics.isolation_violations += 1
         self.record(Event(
             datetime.now(timezone.utc).isoformat(), "monitor", 0, "isolation_assessment",
             {
@@ -175,9 +189,11 @@ class DeviceMonitor:
                 "ime_before_visible": before.ime_visible,
                 "ime_after_visible": after.ime_visible,
                 "ime_after_display_id": after.ime_target_display_id,
+                "ime_appeared_between_actions": ime_appeared_between_actions,
                 "ime_leaked_to_primary": ime_leaked_to_primary,
             }, attribution.kind,
         ))
+        self._last_assessed_after = after
         return attribution
 
     def record(self, event: Event) -> None:

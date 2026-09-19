@@ -292,3 +292,38 @@ reported `mIsInputViewShown=false`. That transient system value is not proof of
 non-interference. Browser searches must therefore use a query URL; taps on
 search/address/input surfaces are blocked deterministically. Custom app
 surfaces need a verified deep link or takeover.
+
+## 2026-09-18 — Local/hide IME policy is rejected on the target Huawei
+
+**Experiment:** On the connected Huawei ELS-AN00 (Android 12 / API 31) with
+scrcpy 4.1, create a 1080×2400/420 virtual display and request each non-default
+IME policy independently:
+
+```bash
+scrcpy --new-display=1080x2400/420 --display-ime-policy=local --start-app=+com.wolt.android
+scrcpy --new-display=1080x2400/420 --display-ime-policy=hide  --start-app=+com.wolt.android
+```
+
+Both displays were created (IDs 139 and 140), but both policy calls failed in
+`WindowManagerService#setDisplayImePolicy` with the same platform exception:
+
+```text
+SecurityException: Attempted to set IME policy to an untrusted virtual display
+```
+
+**Conclusion:** The official scrcpy/AOSP mechanism was tested, not assumed.
+This Huawei ROM classifies the shell-owned scrcpy display as untrusted and
+rejects both `local` and `hide`; the launcher must omit the option or fail to
+start reliably. The remaining system behavior may fall back to Display 0.
+
+**Decision:** Keep three explicit layers: (1) request local IME only on devices
+whose capability probe proves it is accepted; (2) use IME-free execution on
+this device—deep links, URL queries, existing page elements, semantic APIs and
+display-scoped Accessibility `ACTION_SET_TEXT`; and (3) monitor Display 0 IME
+state and terminate on any attributed keyboard leak. `ACTION_SET_TEXT` avoids
+clicking merely to enter text, but is not itself an IME-isolation mechanism: an
+app or control may independently create an input connection and summon IME.
+
+**Boundary:** If no verified IME-free route exists, the task stops. A typing
+courtesy lock can reduce resource contention but cannot correct wrong-display
+IME routing, so it is not a core isolation guarantee.

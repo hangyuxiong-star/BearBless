@@ -40,6 +40,22 @@ class GuardedExecutor:
             ))
             raise
 
+        # Resolve-and-list is not enough on Huawei: after a USB reconnect the
+        # id can remain present while screencap aliases it to Display 0. Verify
+        # visual identity before dispatching anything that can mutate state.
+        if live_id is not None and action.action not in {ActionType.OBSERVE, ActionType.WAIT}:
+            try:
+                self.observer.assert_isolated(live_id)
+            except IsolationViolation as exc:
+                self.monitor.metrics.display_identity_violations += 1
+                self.monitor.metrics.isolation_violations += 1
+                self.monitor.record(Event(
+                    self._now(), "guard", live_id, "display_identity_rejected",
+                    {"reason": str(exc)}, "blocked",
+                ))
+                self.display.stop()
+                raise
+
         before = self.monitor.snapshot(monotonic_time=time.monotonic())
         result: Frame | None = None
         try:
@@ -48,19 +64,26 @@ class GuardedExecutor:
         except Exception:
             self.monitor.record_agent_action(action, "error", self._safe_payload(action))
             raise
+        # A focused editor often summons Android's singleton IME a fraction of
+        # a second after the input command returns.  Sample after the UI settle
+        # window (which was previously spent only before frame capture), so an
+        # IME rendered on Display 0 cannot slip between two actions.
+        if result is None and action.action in {
+            ActionType.OPEN_APP, ActionType.CLICK_TEXT, ActionType.TAP, ActionType.CONDITIONAL_TAP,
+            ActionType.SET_ALARM, ActionType.SWIPE, ActionType.TYPE, ActionType.TYPE_BOTTOM, ActionType.KEY, ActionType.BACK,
+        }:
+            time.sleep(1.2 if action.capability.value == "SENSITIVE" else 0.4)
         after = self.monitor.snapshot(monotonic_time=time.monotonic())
         if live_id is not None:
             attribution = self.monitor.assess(before, after, action, shadow_display_id=live_id)
             if attribution.kind == "violation" or self.monitor.metrics.ime_policy_violations:
                 self.display.stop()
+                if self.monitor.metrics.ime_policy_violations:
+                    raise IsolationViolation(
+                        "agent action caused the system keyboard to appear on Display 0"
+                    )
                 raise IsolationViolation(attribution.reason)
             if result is None:
-                if action.action in {
-                    ActionType.TAP, ActionType.CONDITIONAL_TAP, ActionType.SWIPE,
-                    ActionType.TYPE, ActionType.KEY, ActionType.BACK, ActionType.WAIT,
-                }:
-                    if action.action != ActionType.WAIT:
-                        time.sleep(0.4)
                 result = self.observer.capture(live_id)
         return result
 
@@ -69,6 +92,14 @@ class GuardedExecutor:
         if action.action == ActionType.OPEN_APP:
             assert action.package is not None
             self.display.launch_app(action.package, action.uri)
+        elif action.action == ActionType.SET_ALARM:
+            assert action.hour is not None and action.minute is not None
+            self.display.set_alarm(action.hour, action.minute)
+        elif action.action == ActionType.CLICK_TEXT:
+            assert display_id is not None and action.package is not None and action.text is not None
+            self.inputs.click_text_exact(
+                display_id, action.package, action.text, allow_multiple=action.allow_multiple
+            )
         elif action.action == ActionType.TAP:
             assert display_id is not None and action.x is not None and action.y is not None
             self.inputs.tap(display_id, action.x, action.y)
@@ -88,6 +119,9 @@ class GuardedExecutor:
         elif action.action == ActionType.TYPE:
             assert display_id is not None and action.text is not None
             self.inputs.type_text(display_id, action.text)
+        elif action.action == ActionType.TYPE_BOTTOM:
+            assert display_id is not None and action.text is not None
+            self.inputs.type_bottom_text(display_id, action.text)
         elif action.action in (ActionType.KEY, ActionType.BACK):
             assert display_id is not None
             self.inputs.key(display_id, action.keycode if action.action == ActionType.KEY else "BACK")

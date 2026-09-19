@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+import re
 
 from bearbless.runtime.adb import AdbClient
 from bearbless.runtime.shadow_display import ShadowDisplay
@@ -27,15 +28,59 @@ class AccessibilityTextBridge:
         return result.ok and "enabled=true" in output
 
     def set_text(self, display_id: int, text: str) -> None:
-        encoded = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+        self._set_text(display_id, text, method="set_text")
+
+    def set_text_bottom(self, display_id: int, text: str) -> None:
+        """Write only to the lowest editable node on the shadow display."""
+        self._set_text(display_id, text, method="set_text_bottom")
+
+    def request_send_confirmation(self, token: str, recipient: str, message: str) -> None:
+        fields = (token, self._encode(recipient), self._encode(message))
         result = self.adb.shell(
             "content", "call", "--uri", f"content://{self.authority}",
-            "--method", "set_text", "--arg", f"{display_id}:{encoded}",
+            "--method", "request_send_confirmation", "--arg", ":".join(fields),
+        )
+        output = self._output(result)
+        if not result.ok or "ok=true" not in output:
+            raise InputBackendError(output.strip() or "could not post send confirmation")
+
+    def click_text_exact(self, display_id: int, package: str, text: str, *, allow_multiple: bool = False) -> None:
+        fields = (str(display_id), self._encode(package), self._encode(text))
+        if allow_multiple:
+            fields = (*fields, "1")
+        result = self.adb.shell(
+            "content", "call", "--uri", f"content://{self.authority}",
+            "--method", "click_text_exact", "--arg", ":".join(fields),
+        )
+        output = self._output(result)
+        if not result.ok or "ok=true" not in output:
+            raise InputBackendError(output.strip() or "exact-text accessibility click failed")
+
+    def send_confirmation_status(self, token: str) -> str:
+        result = self.adb.shell(
+            "content", "call", "--uri", f"content://{self.authority}",
+            "--method", "send_confirmation_status", "--arg", token,
+        )
+        output = self._output(result)
+        if not result.ok or "ok=true" not in output:
+            raise InputBackendError(output.strip() or "could not read send confirmation")
+        match = re.search(r"status=([a-z_]+)", output)
+        return match.group(1) if match else "unknown"
+
+    def _set_text(self, display_id: int, text: str, *, method: str) -> None:
+        encoded = self._encode(text)
+        result = self.adb.shell(
+            "content", "call", "--uri", f"content://{self.authority}",
+            "--method", method, "--arg", f"{display_id}:{encoded}",
         )
         output = self._output(result)
         if not result.ok or "ok=true" not in output:
             reason = output.strip() or "BearBless accessibility bridge rejected text entry"
             raise InputBackendError(reason)
+
+    @staticmethod
+    def _encode(text: str) -> str:
+        return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
 
     @staticmethod
     def _output(result: object) -> str:
@@ -68,6 +113,16 @@ class AdbDisplayInputBackend:
     def tap(self, display_id: int, x: int, y: int) -> None:
         self._dispatch(display_id, "tap", str(x), str(y))
 
+    def click_text_exact(self, display_id: int, package: str, text: str, *, allow_multiple: bool = False) -> None:
+        live_id = self.display.resolve_live_id()
+        if display_id != live_id:
+            raise InputBackendError(
+                f"action targeted display {display_id}, current shadow display is {live_id}"
+            )
+        if self.text_bridge is None or not self.text_bridge.available():
+            raise InputBackendError("BearBless accessibility bridge is unavailable")
+        self.text_bridge.click_text_exact(live_id, package, text, allow_multiple=allow_multiple)
+
     def swipe(self, display_id: int, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
         self._dispatch(display_id, "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms))
 
@@ -87,6 +142,16 @@ class AdbDisplayInputBackend:
             )
         escaped = text.replace("%", "%25").replace(" ", "%s")
         self._dispatch(live_id, "text", escaped)
+
+    def type_bottom_text(self, display_id: int, text: str) -> None:
+        live_id = self.display.resolve_live_id()
+        if display_id != live_id:
+            raise InputBackendError(
+                f"action targeted display {display_id}, current shadow display is {live_id}"
+            )
+        if self.text_bridge is None or not self.text_bridge.available():
+            raise InputBackendError("BearBless accessibility bridge is unavailable")
+        self.text_bridge.set_text_bottom(live_id, text)
 
     def key(self, display_id: int, keycode: str | int) -> None:
         self._dispatch(display_id, "keyevent", str(keycode))

@@ -1,7 +1,13 @@
 package com.bearbless.bridge;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Binder;
@@ -24,11 +30,40 @@ public final class BridgeProvider extends ContentProvider {
             return reply;
         }
         BearBlessAccessibilityService service = BearBlessAccessibilityService.getInstance();
+        if ("request_send_confirmation".equals(method) && arg != null) {
+            return requestSendConfirmation(arg);
+        }
+        if ("send_confirmation_status".equals(method) && arg != null) {
+            String status = getContext().getSharedPreferences("confirmations", Context.MODE_PRIVATE)
+                    .getString(arg, "pending");
+            reply.putBoolean("ok", true);
+            reply.putString("status", status);
+            return reply;
+        }
         if ("health".equals(method)) {
             reply.putBoolean("enabled", service != null);
             return reply;
         }
-        if (!"set_text".equals(method) || arg == null || service == null) {
+        if ("click_text_exact".equals(method) && arg != null && service != null) {
+            try {
+                String[] fields = arg.split(":", 4);
+                int displayId = Integer.parseInt(fields[0]);
+                String packageName = decode(fields[1]);
+                String expectedText = decode(fields[2]);
+                boolean allowMultiple = fields.length == 4 && "1".equals(fields[3]);
+                String error = service.clickExactTextOnDisplay(displayId, packageName, expectedText, allowMultiple);
+                reply.putBoolean("ok", error == null);
+                if (error != null) reply.putString("error", error);
+            } catch (RuntimeException error) {
+                reply.putBoolean("ok", false);
+                reply.putString("error", "semantic click failed: " + error.getClass().getSimpleName()
+                        + ": " + String.valueOf(error.getMessage()));
+            }
+            return reply;
+        }
+        boolean setText = "set_text".equals(method);
+        boolean setBottomText = "set_text_bottom".equals(method);
+        if ((!setText && !setBottomText) || arg == null || service == null) {
             reply.putBoolean("ok", false);
             reply.putString("error", service == null ? "accessibility service is disabled" : "invalid request");
             return reply;
@@ -37,12 +72,61 @@ public final class BridgeProvider extends ContentProvider {
             int split = arg.indexOf(':');
             int displayId = Integer.parseInt(arg.substring(0, split));
             byte[] raw = Base64.decode(arg.substring(split + 1), Base64.URL_SAFE | Base64.NO_PADDING);
-            String error = service.setTextOnDisplay(displayId, new String(raw, StandardCharsets.UTF_8));
+            String decoded = new String(raw, StandardCharsets.UTF_8);
+            String error = setBottomText
+                    ? service.setTextOnBottomEditable(displayId, decoded)
+                    : service.setTextOnDisplay(displayId, decoded);
             reply.putBoolean("ok", error == null);
             if (error != null) reply.putString("error", error);
         } catch (RuntimeException error) {
             reply.putBoolean("ok", false);
             reply.putString("error", "invalid payload: " + error.getClass().getSimpleName());
+        }
+        return reply;
+    }
+
+    private static String decode(String value) {
+        return new String(Base64.decode(value, Base64.URL_SAFE | Base64.NO_PADDING), StandardCharsets.UTF_8);
+    }
+
+    private Bundle requestSendConfirmation(String arg) {
+        Bundle reply = new Bundle();
+        try {
+            String[] fields = arg.split(":", 3);
+            String token = fields[0];
+            String recipient = new String(Base64.decode(fields[1], Base64.URL_SAFE | Base64.NO_PADDING), StandardCharsets.UTF_8);
+            String message = new String(Base64.decode(fields[2], Base64.URL_SAFE | Base64.NO_PADDING), StandardCharsets.UTF_8);
+            Context context = getContext();
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            String channelId = "bearbless_confirmations";
+            manager.createNotificationChannel(new NotificationChannel(
+                    channelId, "BearBless 操作确认", NotificationManager.IMPORTANCE_HIGH));
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+            Intent approve = new Intent(context, ConfirmationReceiver.class)
+                    .setAction(ConfirmationReceiver.ACTION_APPROVE)
+                    .putExtra(ConfirmationReceiver.EXTRA_TOKEN, token);
+            Intent cancel = new Intent(context, ConfirmationReceiver.class)
+                    .setAction(ConfirmationReceiver.ACTION_CANCEL)
+                    .putExtra(ConfirmationReceiver.EXTRA_TOKEN, token);
+            Notification notification = new Notification.Builder(context, channelId)
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setContentTitle("确认给“" + recipient + "”发送消息？")
+                    .setContentText(message)
+                    .setStyle(new Notification.BigTextStyle().bigText(message))
+                    .setAutoCancel(false)
+                    .setOngoing(true)
+                    .addAction(new Notification.Action.Builder(null, "取消",
+                            PendingIntent.getBroadcast(context, token.hashCode() + 1, cancel, flags)).build())
+                    .addAction(new Notification.Action.Builder(null, "发送",
+                            PendingIntent.getBroadcast(context, token.hashCode() + 2, approve, flags)).build())
+                    .build();
+            context.getSharedPreferences("confirmations", Context.MODE_PRIVATE)
+                    .edit().putString(token, "pending").apply();
+            manager.notify(token, token.hashCode(), notification);
+            reply.putBoolean("ok", true);
+        } catch (RuntimeException error) {
+            reply.putBoolean("ok", false);
+            reply.putString("error", error.getClass().getSimpleName());
         }
         return reply;
     }

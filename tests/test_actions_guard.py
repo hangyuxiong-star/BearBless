@@ -16,6 +16,14 @@ def test_action_validates_coordinates_and_text() -> None:
         Action(ActionType.TAP, display_id=8, x=100, y=20).validate(width=100, height=200)
 
 
+def test_semantic_alarm_action_validates_time_and_requires_shadow_display() -> None:
+    Action(ActionType.SET_ALARM, display_id=8, hour=18, minute=0).validate(width=100, height=200)
+    with pytest.raises(ActionValidationError, match="hour"):
+        Action(ActionType.SET_ALARM, display_id=8, hour=25, minute=0).validate(width=100, height=200)
+    with pytest.raises(ActionValidationError, match="display_id"):
+        Action(ActionType.SET_ALARM, hour=18, minute=0).validate(width=100, height=200)
+
+
 def test_guard_rejects_display_zero_and_stale_id() -> None:
     guard = ConflictGuard(FakeDisplay(), 100, 200)  # type: ignore[arg-type]
     with pytest.raises(GuardViolation, match="owned by the human"):

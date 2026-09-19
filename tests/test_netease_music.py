@@ -1,5 +1,6 @@
 import json
 
+from bearbless.device_task import requires_netease_exact_song_route
 from bearbless.runtime.netease_music import resolve_netease_song_uri
 
 
@@ -30,3 +31,15 @@ def test_does_not_guess_when_search_has_no_exact_title() -> None:
 
 def test_non_playback_task_does_not_use_deep_link() -> None:
     assert resolve_netease_song_uri("打开网易云搜索歌曲银河赴约") is None
+
+
+def test_netease_playback_requires_ime_free_exact_song_route() -> None:
+    assert requires_netease_exact_song_route(
+        "打开网易云音乐，播放歌曲银河赴约", "com.netease.cloudmusic"
+    )
+    assert not requires_netease_exact_song_route(
+        "打开网易云搜索歌曲银河赴约", "com.netease.cloudmusic"
+    )
+    assert not requires_netease_exact_song_route(
+        "播放歌曲银河赴约", "com.google.android.youtube"
+    )

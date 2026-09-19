@@ -8,7 +8,7 @@ def test_process_one_request_claims_and_finishes(monkeypatch, tmp_path):
     monkeypatch.setattr(
         worker,
         "run_general_device_task",
-        lambda goal, task_spec=None: TaskState("agent-test", goal, status=TaskStatus.COMPLETED),
+        lambda goal, task_spec=None, should_cancel=None: TaskState("agent-test", goal, status=TaskStatus.COMPLETED),
     )
     assert worker.process_one_request(tmp_path)
     import json

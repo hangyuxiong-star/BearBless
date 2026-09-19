@@ -35,19 +35,30 @@ class SetOfMarkGrounder:
 
     def ground(self, frame_path: str | Path) -> GroundedScreen:
         source = Path(frame_path)
-        result = self.runner.run(
-            [
-                "tesseract", str(source), "stdout", "-l", "chi_sim+eng",
-                "--tessdata-dir", str(self.tessdata),
-                "--psm", "11",
-                "-c", "tessedit_create_tsv=1",
-            ],
-            category="ocr-grounding",
-            timeout=30,
-        )
-        if not result.ok or not isinstance(result.stdout, str):
+        outputs: list[str] = []
+        for language in ("chi_sim", "chi_sim+eng"):
+            result = self.runner.run(
+                [
+                    "tesseract", str(source), "stdout", "-l", language,
+                    "--tessdata-dir", str(self.tessdata), "--psm", "11",
+                    "-c", "tessedit_create_tsv=1",
+                ],
+                category="ocr-grounding", timeout=30,
+            )
+            if result.ok and isinstance(result.stdout, str):
+                outputs.append(result.stdout)
+        if not outputs:
             raise RuntimeError("display-specific OCR grounding failed")
-        elements = tuple(self._parse_tsv(result.stdout)[: self.max_elements])
+        merged: list[MarkedElement] = []
+        seen: set[tuple[str, tuple[int, int, int, int]]] = set()
+        for output in outputs:
+            for item in self._parse_tsv(output):
+                key = (item.label, item.bounds)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(MarkedElement(len(merged) + 1, item.label, item.bounds))
+        elements = tuple(merged[: self.max_elements])
         annotated = source.with_name(f"{source.stem}_marked.png")
         self._annotate(source, annotated, elements)
         return GroundedScreen(annotated, elements)

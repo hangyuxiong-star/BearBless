@@ -20,6 +20,11 @@ def test_submit_task_rejects_invalid_length(tmp_path) -> None:
         submit_task_request("x", tmp_path)
 
 
+def test_map_tasks_are_rejected_with_wolt_address_guidance() -> None:
+    with pytest.raises(TaskRequestError, match="Wolt 店铺详情页"):
+        compile_mission_contract("打开地图导航去餐厅")
+
+
 def test_compile_mission_contract_is_bounded_and_verifiable() -> None:
     contract = compile_mission_contract("比较三个出行方案并保存")
     assert contract.constraints["workspace"] == "shadow_display"
@@ -109,3 +114,39 @@ def test_dynamic_contract_falls_back_after_repeated_invalid_responses() -> None:
     contract = compile_dynamic_mission_contract("设置明天早上七点半的闹钟", Analyzer())
     assert contract.constraints["contract_fallback"] is True
     assert contract.constraints["workspace"] == "shadow_display"
+
+
+def test_explicit_message_fallback_preserves_user_confirmation() -> None:
+    class OfflineAnalyzer:
+        def complete(self, prompt):
+            raise RuntimeError("offline")
+
+    goal = "打开QQ给红枣桂花熊发消息：去吃汉堡吧。"
+    contract = compile_dynamic_mission_contract(goal, OfflineAnalyzer())
+
+    assert contract.task_mode.value == "SENSITIVE_TASK"
+    assert contract.constraints["user_confirmed_sensitive_action"] is True
+    assert contract.constraints["sensitive_scope"] == goal
+    assert "发送消息" not in contract.forbidden_actions
+
+
+def test_explicit_faxinxi_message_preserves_user_confirmation() -> None:
+    class Analyzer:
+        def complete(self, prompt):
+            return {
+                "allowed_actions": ["打开QQ", "向红枣桂花熊发送原文消息"],
+                "forbidden_actions": ["发送消息", "支付"],
+                "success_criteria": [{
+                    "name": "sent",
+                    "description": "聊天中出现晚上好消息气泡",
+                    "required": True,
+                }],
+            }
+
+    goal = "打开QQ，给红枣桂花熊发信息：晚上好"
+    contract = compile_dynamic_mission_contract(goal, Analyzer())
+
+    assert contract.task_mode.value == "SENSITIVE_TASK"
+    assert contract.constraints["user_confirmed_sensitive_action"] is True
+    assert contract.constraints["sensitive_scope"] == goal
+    assert "发送消息" not in contract.forbidden_actions

@@ -8,9 +8,9 @@ from bearbless.config import Config
 from bearbless.runtime.capabilities import Doctor, save_report
 from bearbless.runtime.shadow_test import ShadowTest
 from bearbless.demo_fixture import run_fixture
-from bearbless.device_task import DEFAULT_ROUTE_URL, run_general_device_task, run_live_browser_task
-from bearbless.task_queue import claim_next_request, finish_request
-from bearbless.schemas import TaskSpec
+from bearbless.dashboard_data import compile_dynamic_mission_contract, submit_task_request
+from bearbless.device_task import DEFAULT_ROUTE_URL, run_live_browser_task
+from bearbless.worker import process_one_request, run_worker, stop_worker
 
 
 def _print_human(report: dict[str, object]) -> None:
@@ -37,8 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="run a guarded task on the connected phone")
     run.add_argument("--task", required=True)
     run.add_argument("--url", default=DEFAULT_ROUTE_URL)
-    worker = subparsers.add_parser("work-once", help="claim and execute one queued dashboard task")
+    work_once = subparsers.add_parser("work-once", help="claim and execute one queued dashboard task")
+    work_once.add_argument("--queue-dir", type=Path, default=Path("artifacts/requests"))
+    worker = subparsers.add_parser("worker", help="run the independent dashboard task worker")
     worker.add_argument("--queue-dir", type=Path, default=Path("artifacts/requests"))
+    worker.add_argument("--poll-seconds", type=float, default=1.0)
+    worker.add_argument("--lease-seconds", type=float, default=180.0)
+    stop = subparsers.add_parser("stop-worker", help="gracefully stop the worker recorded for this queue")
+    stop.add_argument("--queue-dir", type=Path, default=Path("artifacts/requests"))
+    enqueue = subparsers.add_parser("enqueue", help="compile and enqueue a guarded phone task")
+    enqueue.add_argument("--task", required=True)
+    enqueue.add_argument("--queue-dir", type=Path, default=Path("artifacts/requests"))
+    enqueue.add_argument("--cloud-vision-consent", action="store_true")
     return parser
 
 
@@ -79,26 +89,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Failure: {state.failure_reason}")
         return 0 if state.status.value == "COMPLETED" else 1
     if args.command == "work-once":
-        claimed = claim_next_request(args.queue_dir)
-        if claimed is None:
+        if not process_one_request(args.queue_dir):
             print("No queued task.")
             return 0
-        path, request = claimed
+        print("Processed one queued task.")
+        return 0
+    if args.command == "worker":
+        print(f"BearBless worker watching {args.queue_dir}")
         try:
-            contract = TaskSpec.model_validate(request["mission_contract"]) if request.get("mission_contract") else None
-            state = run_general_device_task(str(request["goal"]), task_spec=contract)
-            finish_request(
-                path,
-                status="COMPLETED" if state.status.value == "COMPLETED" else "FAILED",
-                task_id=state.task_id,
-                error=state.failure_reason,
+            run_worker(
+                args.queue_dir,
+                poll_seconds=max(0.1, args.poll_seconds),
+                lease_seconds=max(5.0, args.lease_seconds),
             )
-            print(f"Request: {request['request_id']}")
-            print(f"Task: {state.task_id}")
-            print(f"Status: {state.status.value}")
-            return 0 if state.status.value == "COMPLETED" else 1
-        except Exception as exc:
-            finish_request(path, status="FAILED", error=str(exc))
-            print(f"Request failed safely: {exc}")
-            return 1
+        except KeyboardInterrupt:
+            print("Worker stopped.")
+        return 0
+    if args.command == "stop-worker":
+        stopped = stop_worker(args.queue_dir)
+        print("Worker stop requested." if stopped else "No live worker recorded.")
+        return 0
+    if args.command == "enqueue":
+        contract = compile_dynamic_mission_contract(args.task)
+        if args.cloud_vision_consent:
+            contract = contract.model_copy(update={
+                "constraints": {**contract.constraints, "cloud_vision_consent": True}
+            })
+        path = submit_task_request(contract.goal, args.queue_dir, contract)
+        print(f"Queued: {path.stem}")
+        return 0
     return 2

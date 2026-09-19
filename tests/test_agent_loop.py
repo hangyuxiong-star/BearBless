@@ -6,8 +6,9 @@ from bearbless.agent.planner import ManualPlanner
 from bearbless.agent.state import TaskState, TaskStatus
 from bearbless.agent.trace import TaskTrace
 from bearbless.agent.verifier import EvidenceVerifier
-from bearbless.runtime.actions import Action, ActionType
+from bearbless.runtime.actions import Action, ActionCapability, ActionType
 from bearbless.errors import ModelProtocolError
+from bearbless.agent.model_client import ModelClientError
 
 
 class Executor:
@@ -94,6 +95,26 @@ def test_model_protocol_failure_has_separate_retry_budget() -> None:
     assert result.replans == 0
 
 
+def test_model_transport_failure_stops_without_replanning() -> None:
+    class OfflinePlanner:
+        reactive = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def plan(self, state):
+            self.calls += 1
+            raise ModelClientError("GUI-Plus unavailable: timed out")
+
+    planner = OfflinePlanner()
+    state = TaskState("model-offline", "test", max_replans=3)
+    result = AgentLoop(planner, Executor(), AlwaysPass()).run(state)
+    assert result.status == TaskStatus.FAILED
+    assert result.replans == 0
+    assert planner.calls == 1
+    assert result.failure_reason == "GUI-Plus unavailable: timed out"
+
+
 def test_success_clears_stale_recoverable_failure() -> None:
     state = TaskState("recovered", "test", failure_reason="old transient failure")
     result = AgentLoop(
@@ -101,3 +122,69 @@ def test_success_clears_stale_recoverable_failure() -> None:
     ).run(state)
     assert result.status == TaskStatus.COMPLETED
     assert result.failure_reason is None
+
+
+def test_sensitive_action_verifies_immediately_and_stops() -> None:
+    executor = Executor()
+    planner = ManualPlanner((
+        Action(
+            ActionType.TAP,
+            display_id=8,
+            x=10,
+            y=10,
+            reason="点击发送",
+            capability=ActionCapability.SENSITIVE,
+        ),
+        Action(ActionType.TAP, display_id=8, x=20, y=20),
+    ))
+    state = TaskState("send-once", "test")
+    result = AgentLoop(planner, executor, AlwaysPass()).run(state)
+    assert result.status == TaskStatus.COMPLETED
+    assert len(executor.actions) == 1
+    assert result.step_index == 1
+    assert result.collected_data["sensitive_effect"]["phase"] == "VERIFIED"
+
+
+def test_recovered_prepared_sensitive_action_is_verified_without_replay() -> None:
+    executor = Executor()
+    state = TaskState(
+        "send-crash",
+        "test",
+        status=TaskStatus.EXECUTING,
+        collected_data={
+            "sensitive_effect": {
+                "phase": "PREPARED",
+                "action": "CLICK_TEXT",
+                "package": "com.tencent.mobileqq",
+                "text": "发送",
+            }
+        },
+    )
+
+    result = AgentLoop(
+        ManualPlanner((Action(ActionType.FINISH),)), executor, AlwaysPass()
+    ).run(state)
+
+    assert result.status == TaskStatus.COMPLETED
+    assert executor.actions == []
+    assert result.collected_data["sensitive_effect"]["phase"] == "VERIFIED"
+
+
+def test_unverified_committed_sensitive_action_is_not_retried() -> None:
+    executor = Executor()
+    planner = ManualPlanner((Action(
+        ActionType.CLICK_TEXT,
+        display_id=8,
+        package="com.tencent.mobileqq",
+        text="发送",
+        reason="点击发送",
+        capability=ActionCapability.SENSITIVE,
+    ),))
+    state = TaskState("send-unverified", "test", max_replans=5)
+
+    result = AgentLoop(planner, executor, AlwaysFail()).run(state)
+
+    assert result.status == TaskStatus.FAILED
+    assert len(executor.actions) == 1
+    assert result.replans == 0
+    assert result.collected_data["sensitive_effect"]["phase"] == "COMMITTED"

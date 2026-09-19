@@ -72,6 +72,13 @@ def test_explicitly_confirmed_message_allows_scoped_sensitive_actions():
     TaskActionPolicy().authorize(confirmed, Action(
         ActionType.TYPE, display_id=8, text="你吃饭了吗？", capability=ActionCapability.ENTER_TEXT,
     ))
+    TaskActionPolicy().authorize(confirmed, Action(
+        ActionType.TYPE, display_id=8, text="小熊", capability=ActionCapability.ENTER_TEXT,
+    ))
+    TaskActionPolicy().authorize(confirmed, Action(
+        ActionType.TAP, display_id=8, x=1, y=1,
+        reason="读取联系人结果", capability=ActionCapability.READ,
+    ))
     with pytest.raises(PolicyViolation, match="differs"):
         TaskActionPolicy().authorize(confirmed, Action(
             ActionType.TYPE, display_id=8, text="错误内容", capability=ActionCapability.ENTER_TEXT,
@@ -83,6 +90,23 @@ def test_explicitly_confirmed_message_allows_scoped_sensitive_actions():
     with pytest.raises(PolicyViolation, match="outside the confirmed"):
         TaskActionPolicy().authorize(confirmed, Action(
             ActionType.TAP, display_id=8, x=1, y=1, capability=ActionCapability.CHANGE_SETTING,
+        ))
+
+
+def test_staged_sensitive_message_cannot_be_typed_twice_or_followed_by_navigation_tap():
+    confirmed = state(TaskMode.SENSITIVE_TASK)
+    confirmed.task_spec.constraints["user_confirmed_sensitive_action"] = True
+    confirmed.task_spec.constraints["sensitive_scope"] = "给小熊发消息：你吃饭了吗？"
+    confirmed.action_history.append({
+        "action": "TYPE", "text": "你吃饭了吗？", "capability": "ENTER_TEXT",
+    })
+    with pytest.raises(PolicyViolation, match="already been staged"):
+        TaskActionPolicy().authorize(confirmed, Action(
+            ActionType.TYPE, display_id=8, text="你吃饭了吗？", capability=ActionCapability.ENTER_TEXT,
+        ))
+    with pytest.raises(PolicyViolation, match="sensitive final send"):
+        TaskActionPolicy().authorize(confirmed, Action(
+            ActionType.TAP, display_id=8, x=10, y=10, capability=ActionCapability.NAVIGATE,
         ))
 
 

@@ -12,6 +12,10 @@ class VoiceTranscriptionError(RuntimeError):
 
 
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
+_BASIC_T2S = str.maketrans({
+    "開": "开", "團": "团", "時": "时", "鐘": "钟", "訊": "讯",
+    "發": "发", "聯": "联", "繫": "系", "樂": "乐", "與": "与",
+})
 
 
 def to_simplified(text: str) -> str:
@@ -20,7 +24,11 @@ def to_simplified(text: str) -> str:
     try:
         from opencc import OpenCC
     except ImportError:
-        return cleaned
+        # Keep the core voice path useful in the minimal installation. OpenCC
+        # remains the authoritative converter when the voice extra is present;
+        # this small product-vocabulary fallback avoids leaking common app/task
+        # terms through as Traditional Chinese.
+        return cleaned.translate(_BASIC_T2S)
     return OpenCC("t2s").convert(cleaned)
 
 

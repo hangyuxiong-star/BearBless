@@ -30,7 +30,16 @@ SYSTEM_APP_ALIASES: dict[str, str] = {
     "网易云音乐": "com.netease.cloudmusic",
     "网易云": "com.netease.cloudmusic",
     "QQ音乐": "com.tencent.qqmusic",
+    "YouTube": "com.google.android.youtube",
+    "Youtube": "com.google.android.youtube",
+    "youtube": "com.google.android.youtube",
+    "youtobe": "com.google.android.youtube",
+    "Youtobe": "com.google.android.youtube",
+    "油管": "com.google.android.youtube",
     "美团": "com.sankuai.meituan",
+    "Wolt": "com.wolt.android",
+    "wolt": "com.wolt.android",
+    "WOLT": "com.wolt.android",
     "夸克": "com.quark.browser",
     "系统时钟": "com.huawei.deskclock",
     "时钟": "com.huawei.deskclock",
@@ -57,13 +66,10 @@ def resolve_explicit_app_alias(goal: str, adb: AdbClient) -> str | None:
     for alias, package in MAP_PACKAGE_CANDIDATES:
         if alias in goal and package_installed(adb, package):
             return package
-    if any(marker in goal for marker in ("地图", "导航", "路线")):
-        for _, package in MAP_PACKAGE_CANDIDATES:
-            if package_installed(adb, package):
-                return package
+    folded_goal = goal.casefold()
     for alias in sorted(SYSTEM_APP_ALIASES, key=len, reverse=True):
         package = SYSTEM_APP_ALIASES[alias]
-        if alias in goal and package_installed(adb, package):
+        if alias.casefold() in folded_goal and package_installed(adb, package):
             return package
     return None
 

@@ -5,19 +5,21 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+from difflib import SequenceMatcher
 from collections.abc import Callable
 from urllib.request import Request, urlopen
 
 from PIL import Image
 
 from bearbless.agent.state import TaskState
-from bearbless.agent.grounding import SetOfMarkGrounder
+from bearbless.agent.grounding import MarkedElement, SetOfMarkGrounder
 from bearbless.agent.model_client import PhoneModelClient
 from bearbless.runtime.commands import CommandRunner
 from bearbless.runtime.actions import Action, ActionCapability, ActionType
 from bearbless.runtime.media_session import requested_track
 from bearbless.errors import AgentTerminalDecision, ModelProtocolError
 from bearbless.schemas import AgentAction, PhoneDecision, VerificationResult
+from bearbless.message_intent import extract_confirmed_message
 
 
 class VisionAgentError(ModelProtocolError):
@@ -117,15 +119,17 @@ def _ground_alarm_picker_swipe(
 
 
 def _alarm_target(goal: str) -> tuple[str, int, int] | None:
-    match = re.search(r"(\d{1,2})\s*点\s*(半|\d{1,2})?", goal)
+    match = re.search(r"(\d{1,2})\s*(?:点\s*(半|\d{1,2})?|[:：]\s*(\d{1,2}))", goal)
     if not match:
         return None
     hour = int(match.group(1))
-    minute_text = match.group(2) or "0"
+    minute_text = match.group(2) or match.group(3) or "0"
     minute = 30 if minute_text == "半" else int(minute_text)
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         return None
-    period = "下午" if hour >= 12 and hour != 24 else "上午"
+    explicit_pm = any(marker in goal for marker in ("中午", "下午", "晚上", "傍晚", "今晚", "夜里"))
+    explicit_am = any(marker in goal for marker in ("上午", "早上", "清晨", "凌晨"))
+    period = "下午" if (explicit_pm or (hour >= 12 and not explicit_am)) else "上午"
     hour12 = hour % 12 or 12
     return period, hour12, minute
 
@@ -185,19 +189,518 @@ def _music_search_action(goal: str, elements, display_id: int) -> Action | None:
     return None
 
 
+def _wolt_food_action(state: TaskState, elements, display_id: int) -> Action | None:
+    """Drive Wolt's category UI without search, IME, or a model call.
+
+    The category is inferred from the goal.  Keeping this path local is
+    important on devices where focusing Wolt's Search field sends the
+    singleton IME to Display 0.
+    """
+    goal = state.goal.casefold()
+    if "wolt" not in goal:
+        return None
+    if any(term in goal for term in ("中餐", "中式", "chinese")):
+        category = "Chinese"
+        route = "wolt_chinese_categories"
+        criterion = "Wolt Chinese restaurant results"
+    elif any(term in goal for term in ("japanese", "japanse", "日料", "日本料理", "日餐")):
+        category = "Japanese"
+        route = "wolt_japanese_categories"
+        criterion = "Wolt Japanese restaurant results"
+    elif any(term in goal for term in ("汉堡", "burger")):
+        category = "Burger"
+        route = "wolt_burger_categories"
+        criterion = "Wolt Burger results"
+    else:
+        return None
+    state.collected_data["app_skill_route"] = route
+
+    labels = [(item, re.sub(r"\s+", " ", item.label).strip()) for item in elements]
+    page_text = " ".join(label for _, label in labels).casefold()
+    needs_address = "地址" in state.goal
+
+    def exact(text: str):
+        target = re.sub(r"[^a-z0-9]+", "", text.casefold())
+        matches = [
+            item for item, label in labels
+            if re.sub(r"[^a-z0-9]+", "", label.casefold()).startswith(target)
+        ]
+        return min(matches, key=lambda item: item.center[1], default=None)
+
+    # A fresh task can attach to Wolt while a previous run has already left
+    # the requested category selected. Reconstruct that durable UI state from
+    # the page instead of tapping the large Restaurants heading (whose area
+    # overlaps the address selector above it on this layout).
+    visible_category = exact(category)
+    visible_times = [label for _, label in labels if re.search(r"\d+\s*[–-]\s*\d+\s*min", label, re.I)]
+    if (
+        "restaurants" in page_text
+        and visible_category is not None
+        and visible_category.center[1] < 500
+        and visible_times
+        and _wolt_ranked_candidate(labels) is not None
+    ):
+        state.collected_data[f"wolt_{category.casefold()}_filter_selected"] = True
+
+    # If the address selector was left open, selecting the already checked
+    # Home row is navigation back to the existing context, not a location
+    # mutation. Never tap Add new address or an unselected saved address.
+    if "choose your location" in page_text:
+        current_home = next(
+            (
+                item for item, label in labels
+                if re.fullmatch(r"home\s*[✓✔]?", label.casefold().strip())
+                or (label.casefold().startswith("home ") and ("✓" in label or "✔" in label))
+            ),
+            None,
+        )
+        if current_home is not None:
+            x, y = current_home.center
+            return Action(
+                ActionType.TAP, display_id=display_id, x=x, y=y,
+                capability=ActionCapability.NAVIGATE,
+                reason="选择 Wolt 当前已勾选的 Home 地址并返回餐厅结果",
+            )
+
+    # A previously saved cart can cover the merchant page after opening a
+    # venue. "Continue order" only restores the venue/cart context; it does
+    # not place or pay for an order. Continue into the merchant page while the
+    # policy gate still forbids checkout, purchase and payment actions.
+    if "continue order" in page_text and "cancel" in page_text:
+        continue_order = next(
+            (item for item, label in labels if label.casefold().strip() == "continue order"),
+            None,
+        )
+        if continue_order is None:
+            raise AgentTerminalDecision("ABORT", "Wolt 旧购物车弹窗无法识别继续按钮")
+        x, y = continue_order.center
+        return Action(
+            ActionType.TAP,
+            display_id=display_id,
+            x=x,
+            y=y,
+            capability=ActionCapability.NAVIGATE,
+            reason="继续 Wolt 已保存的店铺上下文以读取商家信息",
+        )
+
+    # A WebView OCR box can occasionally span the nearby Delivery control and
+    # More label. If that imprecise tap opened the harmless order-details
+    # sheet, close it and resume reading the venue; never choose a delivery
+    # time or proceed toward checkout.
+    if "order details" in page_text and "where?" in page_text:
+        done = next(
+            (item for item, label in labels if label.casefold().strip() == "done"),
+            None,
+        )
+        if done is not None:
+            x, y = done.center
+            return Action(
+                ActionType.TAP,
+                display_id=display_id,
+                x=x,
+                y=y,
+                capability=ActionCapability.NAVIGATE,
+                reason="关闭误开的 Wolt 配送详情并返回商家页",
+            )
+        return Action(
+            ActionType.BACK,
+            display_id=display_id,
+            capability=ActionCapability.NAVIGATE,
+            reason="关闭误开的 Wolt 配送详情并返回商家页",
+        )
+
+    selected = state.collected_data.get("wolt_selected_restaurant")
+    if needs_address and selected and "address" in page_text:
+        address_index = next(
+            (index for index, (_, label) in enumerate(labels) if label.casefold() == "address"),
+            None,
+        )
+        address_parts = [] if address_index is None else [
+            label for _, label in labels[address_index + 1:address_index + 4]
+            if label and not re.search(r"opening hours|directions|restaurant|delivery", label, re.I)
+        ]
+        address = " ".join(address_parts).strip()
+        if address:
+            selected["address"] = address
+            state.collected_data["wolt_restaurant"] = selected
+            state.collected_data["agent_result"] = (
+                f"Wolt 已选中 {selected['name']}，评分 {selected.get('rating', '页面可见')}，地址 {address}"
+            )
+            state.evidence.append({
+                "criterion": criterion,
+                "passed": True,
+                "evidence": f"merchant={selected['name']}; rating={selected.get('rating')}; address={address}",
+            })
+            return Action(ActionType.FINISH, reason="已从 Wolt 商家信息页验证店名、评分和地址")
+
+    # Once the Restaurants tile has been tapped, the same sparse address-only
+    # shell means the Restaurants WebView is loading. Do not route it back
+    # through the shorter startup budget (or abort immediately if OCR misses
+    # the icon-only bottom navigation).
+    entered_restaurants_loading = (
+        bool(state.collected_data.get("wolt_restaurants_attempts"))
+        and len(labels) <= 6
+        and "food type" not in page_text
+        and "restaurants" not in page_text
+        and any(marker in page_text for marker in ("vej", "gade", "anker", "poppelhegnet"))
+    )
+    if entered_restaurants_loading:
+        waits = int(state.collected_data.get("wolt_restaurants_loading_waits", 0)) + 1
+        state.collected_data["wolt_restaurants_loading_waits"] = waits
+        if waits <= 6:
+            return Action(
+                ActionType.WAIT,
+                display_id=display_id,
+                seconds=2,
+                reason=f"等待 Wolt Restaurants 内容渲染（{waits}/6）",
+            )
+        raise AgentTerminalDecision("ABORT", "Wolt Restaurants 内容加载超时，未使用 Search 回退")
+
+    sparse_startup = len(labels) <= 2 and (
+        len(labels) == 0
+        or any(marker in page_text for marker in ("location", "home", "vej", "anker", "poppelhegnet"))
+    )
+    if ("choose your location" in page_text and "share location" not in page_text) or sparse_startup:
+        waits = int(state.collected_data.get("wolt_startup_waits", 0)) + 1
+        state.collected_data["wolt_startup_waits"] = waits
+        if waits <= 4:
+            return Action(
+                ActionType.WAIT, display_id=display_id, seconds=2,
+                reason=f"等待 Wolt 位置和首页数据加载（{waits}/4）",
+            )
+        raise AgentTerminalDecision("ABORT", "Wolt 位置页加载超时，未出现可安全选择的入口")
+    state.collected_data.pop("wolt_startup_waits", None)
+
+    home_shell_loading = (
+        "order again" in page_text
+        and "restaurants" not in page_text
+        and "food type" not in page_text
+    )
+    if home_shell_loading:
+        waits = int(state.collected_data.get("wolt_home_shell_waits", 0)) + 1
+        state.collected_data["wolt_home_shell_waits"] = waits
+        if waits <= 5:
+            return Action(
+                ActionType.WAIT, display_id=display_id, seconds=2,
+                reason=f"等待 Wolt 首页 Restaurants 入口完成渲染（{waits}/5）",
+            )
+        raise AgentTerminalDecision("ABORT", "Wolt 首页 Restaurants 入口加载超时")
+    state.collected_data.pop("wolt_home_shell_waits", None)
+
+    # After entering Restaurants, Wolt keeps the bottom navigation visible
+    # while the central WebView is still loading. OCR then contains only the
+    # address header plus Home/Search. Treat this as a transient render state,
+    # not as proof that no safe category route exists.
+    # The bottom Home glyph is icon-only on some Wolt builds, so OCR may see
+    # the address header and Search but not the word "Home".  That is still
+    # the same transient Restaurants WebView shell, not evidence that the
+    # category route is unavailable.
+    sparse_restaurants_loading = (
+        len(labels) <= 6
+        and "search" in page_text
+        and "food type" not in page_text
+        and "restaurants" not in page_text
+        and (
+            "home" in page_text
+            or any(marker in page_text for marker in ("vej", "gade", "anker", "poppelhegnet"))
+        )
+    )
+    if sparse_restaurants_loading:
+        waits = int(state.collected_data.get("wolt_restaurants_loading_waits", 0)) + 1
+        state.collected_data["wolt_restaurants_loading_waits"] = waits
+        if waits <= 6:
+            return Action(
+                ActionType.WAIT,
+                display_id=display_id,
+                seconds=2,
+                reason=f"等待 Wolt Restaurants 内容渲染（{waits}/6）",
+            )
+        raise AgentTerminalDecision("ABORT", "Wolt Restaurants 内容加载超时，未使用 Search 回退")
+    state.collected_data.pop("wolt_restaurants_loading_waits", None)
+
+    if "share location" in page_text:
+        item = exact("Share location")
+        if item is None:
+            raise AgentTerminalDecision("ABORT", "Wolt 定位页无法识别 Share location 按钮")
+        x, y = item.center
+        return Action(
+            ActionType.TAP, display_id=display_id, x=x, y=y,
+            capability=ActionCapability.NAVIGATE,
+            reason="使用 Wolt 已配置的位置进入附近商家",
+        )
+
+    # Wolt uses either "Open until …" or "Closes at …" on the same merchant
+    # detail surface.  Requiring only the former made an evening visit fall
+    # through to the category-result waiter even though the venue page and its
+    # More button were already fully rendered.
+    merchant_detail = (
+        "delivery" in page_text
+        and "food type" not in page_text
+        and any(marker in page_text for marker in ("open until", "closes at", "min. order"))
+    )
+    if merchant_detail:
+        if needs_address and state.collected_data.get("wolt_selected_restaurant"):
+            address = next((
+                label for _, label in labels
+                if re.search(r"\b\d{1,4}\b", label)
+                and re.search(r"(?:vej|gade|all[eé]|boulevard|plads|torv)", label, re.I)
+            ), None)
+            if address:
+                result = state.collected_data["wolt_selected_restaurant"]
+                result["address"] = address
+                state.collected_data["wolt_restaurant"] = result
+                state.collected_data["agent_result"] = (
+                    f"Wolt 已选中 {result['name']}，评分 {result.get('rating', '页面可见')}，地址 {address}"
+                )
+                state.evidence.append({
+                    "criterion": criterion,
+                    "passed": True,
+                    "evidence": f"merchant={result['name']}; rating={result.get('rating')}; address={address}",
+                })
+                return Action(ActionType.FINISH, reason="已从 Wolt 商家详情验证店名、评分和地址")
+            more = exact("More")
+            if more is not None and not state.collected_data.get("wolt_more_opened"):
+                state.collected_data["wolt_more_opened"] = True
+                return Action(
+                    ActionType.CLICK_TEXT,
+                    display_id=display_id,
+                    package="com.wolt.android",
+                    text="More",
+                    capability=ActionCapability.READ,
+                    reason="打开 Wolt 商家信息以读取地址",
+                )
+            waits = int(state.collected_data.get("wolt_address_waits", 0)) + 1
+            state.collected_data["wolt_address_waits"] = waits
+            if waits <= 2:
+                return Action(ActionType.WAIT, display_id=display_id, seconds=1, reason="等待 Wolt 商家地址信息渲染")
+            raise AgentTerminalDecision("ABORT", "Wolt 商家详情未显示可验证地址，不能生成 QQ 消息")
+        return Action(
+            ActionType.BACK, display_id=display_id,
+            capability=ActionCapability.NAVIGATE,
+            reason="误入 Wolt 商家详情，返回 Restaurants 分类入口",
+        )
+
+    # Wolt persists the last section. A grocery Categories sheet is not a
+    # useful hamburger route, so close it and re-observe instead of guessing.
+    if "categories" in page_text and "supermarket" in page_text and category.casefold() not in page_text:
+        return Action(
+            ActionType.BACK, display_id=display_id,
+            capability=ActionCapability.NAVIGATE,
+            reason="退出 Wolt Market 分类，返回餐饮入口",
+        )
+
+    filter_key = f"wolt_{category.casefold()}_filter_selected"
+    if state.collected_data.get(filter_key):
+        time_labels = [label for _, label in labels if re.search(r"\d+\s*[–-]\s*\d+\s*min", label, re.I)]
+        ranked = _wolt_ranked_candidate(labels)
+        requires_rating = any(term in state.goal.casefold() for term in ("评分高", "高评分", "rating"))
+        if ranked is None and time_labels and not requires_rating:
+            merchant_items = [
+                (item, label) for item, label in labels
+                if item.center[1] > 500 and len(label) >= 4
+                and not re.search(r"\b(?:kr|km|min)\b|discount|restaurants|sponsored|save\s|search", label, re.I)
+                and not re.fullmatch(r"[\d\W]+", label)
+            ]
+            if merchant_items:
+                item, merchant = merchant_items[0]
+                ranked = (0.0, item, merchant, "页面可见", time_labels[0])
+        if time_labels and ranked:
+            rating_value, merchant_item, merchant, rating, delivery = ranked
+            if requires_rating and category == "Burger" and rating_value < 9.0:
+                scrolls = int(state.collected_data.get("wolt_rating_scrolls", 0)) + 1
+                state.collected_data["wolt_rating_scrolls"] = scrolls
+                if scrolls <= 3:
+                    return Action(
+                        ActionType.SWIPE, display_id=display_id,
+                        x=540, y=1850, x2=540, y2=700, duration_ms=550,
+                        capability=ActionCapability.SEARCH,
+                        reason=(
+                            f"当前可见最高评分 {rating} 低于 Wolt 高评分阈值 9.0，"
+                            f"向下浏览更多 Burger 商家（{scrolls}/3）"
+                        ),
+                    )
+                raise AgentTerminalDecision(
+                    "ABORT", f"Wolt {category} 分类未显示评分达到 9.0 的可验证商家"
+                )
+            restaurant = {
+                "name": merchant,
+                "delivery": delivery or time_labels[0],
+                "category": category,
+                "rating": rating,
+            }
+            if needs_address:
+                state.collected_data["wolt_selected_restaurant"] = restaurant
+                x, y = merchant_item.center
+                return Action(
+                    ActionType.TAP, display_id=display_id, x=x, y=y,
+                    capability=ActionCapability.READ,
+                    reason=f"打开评分较高的 {category} 商家 {merchant}（{rating}）读取地址",
+                )
+            state.collected_data["wolt_restaurant"] = restaurant
+            state.collected_data["agent_result"] = (
+                f"Wolt {category} 分类已找到高评分商家：{merchant}，评分 {rating}"
+                if requires_rating
+                else f"Wolt {category} 分类已显示附近商家：{merchant}"
+            )
+            state.evidence.append({
+                "criterion": criterion,
+                "passed": True,
+                "evidence": (
+                    f"category={category}; merchant={merchant}; rating={rating}; "
+                    f"scale=10; delivery={delivery or time_labels[0]}"
+                ),
+            })
+            return Action(
+                ActionType.FINISH,
+                reason=f"已验证 {category} 商家 {merchant} 的 Wolt 评分为 {rating}",
+            )
+        waits = int(state.collected_data.get("wolt_result_waits", 0)) + 1
+        state.collected_data["wolt_result_waits"] = waits
+        if waits <= 2:
+            return Action(
+                ActionType.WAIT, display_id=display_id, seconds=1,
+                reason=f"等待 Wolt {category} 商家列表加载（{waits}/2）",
+            )
+        raise AgentTerminalDecision("ABORT", f"Wolt {category} 分类未渲染出可验证的商家和配送时间")
+
+    category_item = visible_category
+    # The Restaurants landing page also contains a horizontal category
+    # carousel.  Tapping its OCR label proved unstable on Huawei (a Burger
+    # label tap selected Japanese).  The successful baseline always opens the
+    # Food type sheet first and selects the category from that modal list.
+    food_type = exact("Food type")
+    if "all restaurants" in page_text and food_type is not None:
+        state.collected_data.pop("wolt_restaurants_attempts", None)
+        x, y = food_type.center
+        return Action(
+            ActionType.TAP, display_id=display_id, x=x, y=y,
+            capability=ActionCapability.NAVIGATE,
+            reason="打开 Restaurants 的 Food type 分类",
+        )
+
+    if "food type" in page_text and category_item is not None:
+        x, y = category_item.center
+        state.collected_data[filter_key] = True
+        return Action(
+            ActionType.TAP, display_id=display_id, x=x, y=y,
+            capability=ActionCapability.SEARCH,
+            reason=f"从 Food type 选择现有 {category} 分类",
+        )
+
+    if "restaurants" in page_text and food_type is not None:
+        state.collected_data.pop("wolt_restaurants_attempts", None)
+        x, y = food_type.center
+        return Action(
+            ActionType.TAP, display_id=display_id, x=x, y=y,
+            capability=ActionCapability.NAVIGATE,
+            reason="打开 Restaurants 的 Food type 分类",
+        )
+
+    restaurants = exact("Restaurants")
+    if restaurants is not None:
+        attempts = int(state.collected_data.get("wolt_restaurants_attempts", 0)) + 1
+        state.collected_data["wolt_restaurants_attempts"] = attempts
+        if attempts > 2:
+            raise AgentTerminalDecision("ABORT", "Wolt Restaurants 入口连续点击无效，已停止避免循环")
+        x, _ = restaurants.center
+        # The home category has an illustrated tile immediately above its
+        # label. Tapping the glyph's label baseline can hit the first merchant
+        # carousel on some Wolt layouts, so target the tile body instead.
+        y = max(40, restaurants.bounds[1] - 80)
+        return Action(
+            ActionType.TAP, display_id=display_id, x=x, y=y,
+            capability=ActionCapability.NAVIGATE,
+            reason="进入 Wolt Restaurants",
+        )
+
+    # Search is deliberately not a fallback: it would focus Android's
+    # singleton IME and may render the keyboard on Display 0.
+    raise AgentTerminalDecision(
+        "ABORT",
+        "当前 Wolt 页面没有可证明的免输入法分类路径；已停止且不会点击 Search",
+    )
+
+
+def _wolt_burger_action(state: TaskState, elements, display_id: int) -> Action | None:
+    """Backward-compatible name retained for tests and older callers."""
+    return _wolt_food_action(state, elements, display_id)
+
+
+def _wolt_ranked_candidate(labels):
+    """Bind OCR ratings to their restaurant row and return the highest one."""
+    ranked = []
+    for rating_item, rating_label in labels:
+        match = re.search(r"(?:^|\D)([7-9])(?:[.,]?)(\d)\s*$", rating_label)
+        if not match:
+            continue
+        rating = f"{match.group(1)}.{match.group(2)}"
+        candidates = [
+            (item, label) for item, label in labels
+            if 0 < rating_item.center[1] - item.center[1] <= 120
+            and item.center[0] < 750
+            and len(label) >= 4
+            and not re.search(r"\b(?:kr|km|min)\b|discount|restaurants|sponsored|save\s|search", label, re.I)
+            and not re.fullmatch(r"[\d\W]+", label)
+        ]
+        if not candidates:
+            continue
+        merchant_item, merchant = min(
+            candidates,
+            key=lambda pair: (rating_item.center[1] - pair[0].center[1], -len(pair[1])),
+        )
+        # OCR can append the leading digit of the following distance ("4.1
+        # km") to a merchant name. A lone trailing digit is not part of the
+        # visible restaurant title in this row layout.
+        merchant = re.sub(r"\s+[0-9]$", "", merchant).strip()
+        delivery = next((
+            label for item, label in labels
+            if abs(item.center[1] - rating_item.center[1]) <= 45
+            and re.search(r"\d+\s*[–-]\s*\d+\s*min", label, re.I)
+        ), "")
+        ranked.append((float(rating), merchant_item, merchant, rating, delivery))
+    return max(ranked, key=lambda row: row[0], default=None)
+
+
 def _blue_score(frame_path: str, bounds: tuple[int, int, int, int]) -> int:
     if not frame_path:
         return 0
     try:
         with Image.open(frame_path).convert("RGB") as image:
             crop = image.crop(bounds)
-            pixels = crop.get_flattened_data()
+            pixels = crop.getdata()
             return sum(
                 1 for red, green, blue in pixels
                 if blue >= 150 and blue > red * 1.35 and blue > green * 1.15
             )
     except (OSError, ValueError):
         return 0
+
+
+def _qq_send_button_from_pixels(frame_path: str) -> MarkedElement | None:
+    """Locate QQ's solid blue send button when OCR misses its Chinese label."""
+    if not frame_path:
+        return None
+    try:
+        with Image.open(frame_path).convert("RGB") as image:
+            width, height = image.size
+            points = []
+            # The send button is the only large QQ-blue rectangle in the
+            # extreme lower-right corner. Keeping the scan there avoids
+            # merging it with outgoing message bubbles higher on the screen.
+            for y in range(int(height * 0.90), height, 4):
+                for x in range(int(width * 0.78), width, 4):
+                    red, green, blue = image.getpixel((x, y))
+                    if red < 80 and 110 <= green <= 210 and blue >= 210:
+                        points.append((x, y))
+            if len(points) < 80:
+                return None
+            xs, ys = zip(*points)
+            left, right, top, bottom = min(xs), max(xs), min(ys), max(ys)
+            if right - left < 80 or bottom - top < 40:
+                return None
+            return MarkedElement(0, "发送", (left, top, right, bottom))
+    except (OSError, ValueError):
+        return None
 
 
 def _alarm_picker_action(
@@ -274,29 +777,80 @@ def _alarm_picker_action(
             capability=ActionCapability.CHANGE_SETTING,
         )
     if current_hour != target_hour:
+        visible_target_hour = min(
+            (
+                item for item in all_hour_candidates
+                if int(item.label) == target_hour and item.center[1] != selected_y
+            ),
+            key=lambda item: abs(item.center[1] - selected_y),
+            default=None,
+        )
+        if visible_target_hour is not None:
+            x, y = visible_target_hour.center
+            return Action(
+                ActionType.TAP, display_id=display_id, x=x, y=y,
+                reason=f"直接选择可见小时 {target_hour:02d}",
+                capability=ActionCapability.CHANGE_SETTING,
+            )
         forward = (target_hour - current_hour) % 12
         backward = (current_hour - target_hour) % 12
         increase = forward <= backward
+        # Huawei's wheel adds momentum to longer drags, so distance is not
+        # proportional to rows. Keep the fallback gesture to one measured row;
+        # the fast path above still taps a visible target directly.
+        steps = 1
         return Action(
             ActionType.SWIPE, display_id=display_id,
             x=540, y=selected_y, x2=540,
-            y2=selected_y + (-row_step if increase else row_step),
+            y2=selected_y + (-row_step * steps if increase else row_step * steps),
             duration_ms=320,
-            reason=f"小时 {current_hour:02d} 调整到 {target_hour:02d}",
+            reason=f"小时 {current_hour:02d} 向目标 {target_hour:02d} 快速调整 {steps} 格",
             capability=ActionCapability.CHANGE_SETTING,
         )
     if current_minute != target_minute:
+        visible_target_minute = min(
+            (
+                item for item in all_numbers
+                if abs(item.center[0] - 858) < 140
+                and int(item.label) == target_minute
+                and item.center[1] != selected_y
+            ),
+            key=lambda item: abs(item.center[1] - selected_y),
+            default=None,
+        )
+        if visible_target_minute is not None:
+            x, y = visible_target_minute.center
+            return Action(
+                ActionType.TAP, display_id=display_id, x=x, y=y,
+                reason=f"直接选择可见分钟 {target_minute:02d}",
+                capability=ActionCapability.CHANGE_SETTING,
+            )
         forward = (target_minute - current_minute) % 60
         backward = (current_minute - target_minute) % 60
         increase = forward <= backward
+        # Long minute-wheel drags overshoot by an unpredictable amount on this
+        # device. Use one-row fallback gestures unless the target is visible.
+        steps = 1
         return Action(
             ActionType.SWIPE, display_id=display_id,
             x=858, y=selected_y, x2=858,
-            y2=selected_y + (-row_step if increase else row_step),
+            y2=selected_y + (-row_step * steps if increase else row_step * steps),
             duration_ms=320,
-            reason=f"分钟 {current_minute:02d} 调整到 {target_minute:02d}",
+            reason=f"分钟 {current_minute:02d} 向目标 {target_minute:02d} 快速调整 {steps} 格",
             capability=ActionCapability.CHANGE_SETTING,
         )
+    if "每天" in goal:
+        repeat_item = next(
+            (item for item in elements if "不重复" in item.label.replace(" ", "")),
+            None,
+        )
+        if repeat_item is not None:
+            x, y = repeat_item.center
+            return Action(
+                ActionType.TAP, display_id=display_id, x=x, y=y,
+                reason="打开闹钟重复设置以选择每天",
+                capability=ActionCapability.CHANGE_SETTING,
+            )
     return Action(
         ActionType.TAP, display_id=display_id, x=980, y=232,
         reason=f"确认闹钟 {target_period}{target_hour:02d}:{target_minute:02d}",
@@ -363,13 +917,14 @@ class VisionPlanner:
 
     reactive = True
 
-    def __init__(self, client: PhoneModelClient, display_id: int, allowed_packages: dict[str, str], grounder=None, takeover_notifier: Callable[[str], None] | None = None, skill_instructions: tuple[str, ...] = ()) -> None:
+    def __init__(self, client: PhoneModelClient, display_id: int, allowed_packages: dict[str, str], grounder=None, takeover_notifier: Callable[[str], None] | None = None, skill_instructions: tuple[str, ...] = (), package_identity_checker: Callable[[str], bool] | None = None) -> None:
         self.client = client
         self.display_id = display_id
         self.allowed_packages = allowed_packages
         self.grounder = grounder or SetOfMarkGrounder(CommandRunner())
         self.takeover_notifier = takeover_notifier
         self.skill_instructions = skill_instructions
+        self.package_identity_checker = package_identity_checker
 
     def plan(self, state: TaskState) -> list[Action]:
         if state.last_observation is None:
@@ -381,11 +936,29 @@ class VisionPlanner:
         if fingerprint and len(set(fingerprint)) == 1:
             blank_count = int(state.collected_data.get("blank_frame_count", 0)) + 1
             state.collected_data["blank_frame_count"] = blank_count
-            if blank_count <= 3:
+            # Wolt's WebView frequently needs a longer cold start on the
+            # Huawei secondary display.  Waiting locally is still much faster
+            # and safer than spending GUI-Plus calls on identical white
+            # frames. Other apps retain the short fail-fast bound.
+            blank_limit = 8 if str(state.collected_data.get("app_skill_route", "")).startswith("wolt_") else 3
+            if (
+                blank_count == 3
+                and str(state.collected_data.get("app_skill_route", "")).startswith("wolt_")
+                and not state.collected_data.get("wolt_blank_relaunch_attempted")
+            ):
+                state.collected_data["wolt_blank_relaunch_attempted"] = True
+                return [Action(
+                    ActionType.OPEN_APP,
+                    display_id=self.display_id,
+                    package="com.wolt.android",
+                    capability=ActionCapability.NAVIGATE,
+                    reason="Wolt 隔离屏冷启动白屏，重新启动一次当前虚拟屏内的 Activity",
+                )]
+            if blank_count <= blank_limit:
                 return [Action(
                     ActionType.WAIT,
-                    seconds=min(1.5 * blank_count, 4.0),
-                    reason=f"检测到空白渲染帧，等待页面完成绘制（{blank_count}/3）",
+                    seconds=min(1.5 * blank_count, 3.0),
+                    reason=f"检测到空白渲染帧，等待页面完成绘制（{blank_count}/{blank_limit}）",
                 )]
             raise AgentTerminalDecision(
                 "ABORT",
@@ -414,10 +987,18 @@ class VisionPlanner:
         grounded_text = "".join(item.label.replace(" ", "") for item in grounded.elements)
         if _alarm_save_confirmed(state.goal, grounded_text, history):
             state.collected_data["alarm_saved"] = True
+            state.evidence.append({
+                "criterion": "Alarm saved",
+                "passed": True,
+                "evidence": "闹钟保存后返回列表并显示下次响铃倒计时",
+            })
             return [Action(ActionType.FINISH, reason="闹钟已保存，列表显示下次响铃倒计时")]
         music_action = _music_search_action(state.goal, grounded.elements, self.display_id)
         if music_action is not None:
             return [music_action]
+        wolt_action = _wolt_burger_action(state, grounded.elements, self.display_id)
+        if wolt_action is not None:
+            return [wolt_action]
         if "新建闹钟" in grounded_text and "闹钟" in state.goal:
             picker_action = _alarm_picker_action(
                 state.goal, grounded.elements, self.display_id, frame_path,
@@ -452,13 +1033,348 @@ class VisionPlanner:
             state.task_spec
             and state.task_spec.constraints.get("user_confirmed_sensitive_action") is True
         )
-        if confirmed_sensitive and "QQ" in state.goal:
+        is_qq_task = (
+            state.collected_data.get("target_package") == "com.tencent.mobileqq"
+            or "qq" in state.goal.casefold()
+        )
+        qq_draft = is_qq_task and any(
+            marker in state.goal for marker in ("草稿", "不用发送", "不要发送", "不发送")
+        )
+        if (confirmed_sensitive or qq_draft) and is_qq_task:
             qq_identity_markers = ("QQ", "消息", "联系人", "动态", "登录")
-            if not any(marker in grounded_text for marker in qq_identity_markers):
+            scope = str(state.task_spec.constraints.get("sensitive_scope") or state.goal)
+            recipient_match = re.search(
+                r"(?:给|告诉)[‘'\"“]?([^，,：:\s]{1,40})[’'\"”]?(?:发|说|编辑|写|，|,)",
+                scope,
+            )
+            confirmed_recipient = recipient_match.group(1) if recipient_match else ""
+            compact_recipient = re.sub(r"\s+", "", confirmed_recipient)
+            recipient_candidates: list[tuple[float, MarkedElement]] = []
+            for item in grounded.elements:
+                compact_label = re.sub(r"[\s\W_]+", "", item.label)
+                if len(compact_label) < 2 or not compact_recipient:
+                    continue
+                ratio = SequenceMatcher(None, compact_label, compact_recipient).ratio()
+                if compact_label == compact_recipient or compact_recipient.startswith(compact_label):
+                    ratio = 1.0
+                recipient_candidates.append((ratio, item))
+            recipient_candidates.sort(key=lambda pair: pair[0], reverse=True)
+            best_recipient = recipient_candidates[0] if recipient_candidates else None
+            runner_up_ratio = recipient_candidates[1][0] if len(recipient_candidates) > 1 else 0.0
+            # QQ intentionally repeats a contact on the share surface (for
+            # example once in “最近转发” and again in “最近聊天”).  Two exact
+            # labels are not ambiguous: both identify the same contracted
+            # recipient. Prefer the lower item, which is normally the full
+            # recent-chat row and has a larger, more stable tap target.
+            exact_recipient_items = [
+                item
+                for _ratio, item in recipient_candidates
+                if re.sub(r"[\s\W_]+", "", item.label) == compact_recipient
+            ]
+            if exact_recipient_items:
+                recipient_item = max(exact_recipient_items, key=lambda item: item.center[1])
+            else:
+                recipient_item = (
+                    best_recipient[1]
+                    if best_recipient and best_recipient[0] >= 0.65
+                    and best_recipient[0] - runner_up_ratio >= 0.08
+                    else None
+                )
+            identity_confirmed = any(marker in grounded_text for marker in qq_identity_markers)
+            compact_grounded_text = re.sub(r"\s+", "", grounded_text)
+            if confirmed_recipient and re.sub(r"\s+", "", confirmed_recipient) in compact_grounded_text:
+                identity_confirmed = True
+            if recipient_item is not None:
+                identity_confirmed = True
+            if self.package_identity_checker and self.package_identity_checker("com.tencent.mobileqq"):
+                identity_confirmed = True
+            if not identity_confirmed:
                 raise AgentTerminalDecision(
                     "ABORT",
                     "敏感任务无法确认当前虚拟屏属于 QQ，已在发送前停止",
                 )
+            confirmed_message = extract_confirmed_message(scope)
+            # Tapping the payload preview (rather than the recipient) opens a
+            # read-only “转发消息预览” modal. It has no send control. Close it
+            # deterministically and return to the share list instead of asking
+            # the model to explore the modal or repeatedly tap its body.
+            if "转发消息预览" in grounded_text:
+                return [Action(
+                    ActionType.BACK,
+                    display_id=self.display_id,
+                    capability=ActionCapability.NAVIGATE,
+                    reason="关闭 QQ 转发消息预览并返回联系人选择页",
+                )]
+            # QQ briefly shows its normal inbox with a “正在处理” overlay while
+            # ACTION_SEND is being prepared. Matching the account/header name
+            # during this state can focus the inbox search field and put the
+            # payload in the wrong place. Wait for the actual share surface.
+            if "正在处理" in grounded_text:
+                waits = int(state.collected_data.get("qq_share_loading_waits", 0)) + 1
+                state.collected_data["qq_share_loading_waits"] = waits
+                if waits <= 8:
+                    return [Action(
+                        ActionType.WAIT,
+                        display_id=self.display_id,
+                        seconds=1,
+                        reason=f"等待 QQ 分享联系人页面完成处理（{waits}/8）",
+                    )]
+                raise AgentTerminalDecision("ABORT", "QQ 分享联系人页面处理超时，未输入或发送消息")
+            state.collected_data.pop("qq_share_loading_waits", None)
+            # ACTION_SEND may first open Android's resolver even though the
+            # intent is already package-scoped to QQ. Huawei highlights
+            # QQ's "发送给好友" activity and asks whether to use it once or
+            # always. This is deterministic navigation, not a model decision.
+            use_once = next(
+                (item for item in grounded.elements if item.label.replace(" ", "") == "仅此一次"),
+                None,
+            )
+            send_to_friend = next(
+                (item for item in grounded.elements if item.label.replace(" ", "") == "发送给好友"),
+                None,
+            )
+            if use_once is not None and "使用以下方式打开" in grounded_text:
+                x, y = use_once.center
+                return [Action(
+                    ActionType.TAP,
+                    display_id=self.display_id,
+                    x=x,
+                    y=y,
+                    capability=ActionCapability.NAVIGATE,
+                    reason="仅本次使用 QQ 的发送给好友入口",
+                )]
+            if send_to_friend is not None and "使用以下方式打开" in grounded_text:
+                x, y = send_to_friend.center
+                return [Action(
+                    ActionType.TAP,
+                    display_id=self.display_id,
+                    x=x,
+                    y=y,
+                    capability=ActionCapability.NAVIGATE,
+                    reason="选择 QQ 的发送给好友入口",
+                )]
+            message_staged = any(
+                item.get("action") in {ActionType.TYPE.value, ActionType.TYPE_BOTTOM.value}
+                and item.get("text") == confirmed_message
+                for item in state.action_history
+            )
+            send_button = next(
+                (item for item in grounded.elements if re.sub(r"\s+", "", item.label) == "发送"),
+                None,
+            )
+            send_button = send_button or _qq_send_button_from_pixels(frame_path)
+            ascii_phrases = sorted(
+                (part.strip(" ,.") for part in re.findall(r"[A-Za-z][A-Za-z ]{3,}", confirmed_message)),
+                key=len,
+                reverse=True,
+            )
+            draft_item = next(
+                (
+                    item for item in grounded.elements
+                    if any(phrase and phrase.casefold() in item.label.casefold() for phrase in ascii_phrases)
+                ),
+                None,
+            )
+            recipient_tap_attempted = any(
+                item.get("action") in {ActionType.TAP.value, ActionType.CLICK_TEXT.value}
+                and confirmed_recipient in str(item.get("reason") or "")
+                for item in state.action_history
+            )
+            if recipient_tap_attempted:
+                state.collected_data["qq_recipient_tap_attempted"] = confirmed_recipient
+            recipient_selected = state.collected_data.get("qq_recipient_selected") == confirmed_recipient
+            on_share_list = any(
+                marker in grounded_text for marker in ("最近转发", "最近聊天", "创建新的聊天")
+            )
+            # The dimmed share list remains OCR-visible behind QQ's modal, so
+            # ``on_share_list`` alone cannot distinguish the confirmation
+            # dialog. An exact Send button plus the confirmed recipient is
+            # sufficient proof that recipient selection has completed.
+            share_confirmation = (
+                send_button is not None
+                and "发送给" in re.sub(r"\s+", "", grounded_text)
+            )
+            if (
+                share_confirmation
+                and state.collected_data.get("qq_recipient_tap_attempted") == confirmed_recipient
+            ):
+                recipient_tap_attempted = True
+            if (
+                (send_button is not None and recipient_item is not None)
+                or (share_confirmation and recipient_tap_attempted)
+            ):
+                state.collected_data["qq_recipient_selected"] = confirmed_recipient
+                recipient_selected = True
+            if qq_draft and share_confirmation and recipient_selected and confirmed_message:
+                state.collected_data["qq_draft"] = {
+                    "recipient": confirmed_recipient,
+                    "message": confirmed_message,
+                    "sent": False,
+                    "surface": "qq_share_confirmation",
+                }
+                state.evidence.append({
+                    "criterion": "QQ message draft staged",
+                    "passed": True,
+                    "evidence": f"recipient={confirmed_recipient}; sent=false; surface=share_confirmation",
+                })
+                return [Action(ActionType.FINISH, reason="QQ 分享消息草稿已准备，未点击发送")]
+            if (
+                on_share_list
+                and recipient_item is not None
+                and not recipient_selected
+                and not recipient_tap_attempted
+            ):
+                if qq_draft:
+                    x, y = recipient_item.center
+                    return [Action(
+                        ActionType.TAP,
+                        display_id=self.display_id,
+                        x=x,
+                        y=y,
+                        capability=ActionCapability.READ,
+                        reason=f"打开已确认联系人 {confirmed_recipient} 的 QQ 草稿会话",
+                    )]
+                x, y = recipient_item.center
+                return [Action(
+                    ActionType.TAP,
+                    display_id=self.display_id,
+                    x=x,
+                    y=y,
+                    capability=ActionCapability.READ,
+                    reason=f"打开已确认联系人 {confirmed_recipient} 的 QQ 会话",
+                )]
+            # Never let the vision model type or guess a recipient while QQ's
+            # share list is visible. The outgoing payload is already carried
+            # by ACTION_SEND; the only valid action here is selecting an exact
+            # contracted contact. If that contact cannot be grounded, fail
+            # closed before any text entry or irreversible action.
+            if on_share_list and not recipient_selected and not recipient_tap_attempted:
+                # Chinese OCR on circular-avatar rows may drop one or more
+                # glyphs even though QQ's Accessibility node still exposes the
+                # full contact name. Use the bridge's exact-text lookup here;
+                # it refuses missing or ambiguous matches and therefore never
+                # degrades into a fuzzy coordinate guess.
+                return [Action(
+                    ActionType.CLICK_TEXT,
+                    display_id=self.display_id,
+                    package="com.tencent.mobileqq",
+                    text=confirmed_recipient,
+                    # QQ duplicates the same contact in “最近转发” and
+                    # “最近聊天”. The bridge still clicks exactly one node:
+                    # the lower full-width “最近聊天” match.
+                    allow_multiple=True,
+                    capability=ActionCapability.READ,
+                    reason=f"通过 Accessibility 精确选择联系人 {confirmed_recipient}",
+                )]
+            # ACTION_SEND can expose the ordinary QQ inbox for a short period
+            # without the “正在处理” label. Names visible in the inbox (or the
+            # account header) are not share targets and their coordinates may
+            # become stale when the share sheet appears. Wait for an explicit
+            # share/resolver/confirmation surface instead of tapping them.
+            if (
+                not on_share_list
+                and not share_confirmation
+                and send_to_friend is None
+                and use_once is None
+                and not recipient_selected
+            ):
+                waits = int(state.collected_data.get("qq_share_surface_waits", 0)) + 1
+                state.collected_data["qq_share_surface_waits"] = waits
+                if waits <= 8:
+                    return [Action(
+                        ActionType.WAIT,
+                        display_id=self.display_id,
+                        seconds=1,
+                        reason=f"等待 QQ 分享页出现，禁止点击普通收件箱联系人（{waits}/8）",
+                    )]
+                raise AgentTerminalDecision("ABORT", "QQ 分享页未出现，已在选择联系人或发送前停止")
+            state.collected_data.pop("qq_share_surface_waits", None)
+            if (
+                recipient_item is None
+                and draft_item is not None
+                and not recipient_tap_attempted
+                and not message_staged
+            ):
+                x, y = draft_item.center
+                return [Action(
+                    ActionType.TAP,
+                    display_id=self.display_id,
+                    x=x,
+                    y=y,
+                    capability=ActionCapability.READ,
+                    reason=f"通过已确认消息草稿打开 {confirmed_recipient} 的 QQ 会话",
+                )]
+            if qq_draft and recipient_selected and confirmed_message and not message_staged:
+                return [Action(
+                    ActionType.TYPE_BOTTOM,
+                    display_id=self.display_id,
+                    text=confirmed_message,
+                    capability=ActionCapability.ENTER_TEXT,
+                    reason=f"在 {confirmed_recipient} 会话底部编辑消息草稿但不发送",
+                )]
+            if qq_draft and message_staged:
+                state.collected_data["qq_draft"] = {
+                    "recipient": confirmed_recipient,
+                    "message": confirmed_message,
+                    "sent": False,
+                }
+                state.evidence.append({
+                    "criterion": "QQ message draft staged",
+                    "passed": True,
+                    "evidence": f"recipient={confirmed_recipient}; sent=false",
+                })
+                return [Action(ActionType.FINISH, reason="QQ 消息草稿已编辑并保留，未点击发送")]
+            # In QQ's ACTION_SEND confirmation dialog the shared payload is
+            # already shown above the optional “输入留言” editor. Typing the
+            # payload again would add a second/comment message. Once the
+            # recipient and final Send button are both visible, send the
+            # preloaded payload directly and never focus that editor.
+            # Never trust persisted selection state alone for an irreversible
+            # send. The final confirmation surface must visibly contain the
+            # exact contracted recipient. A model may not infer that a
+            # different nickname (for example “萱草”) is the same person.
+            exact_recipient_visible = bool(
+                compact_recipient
+                and compact_recipient in re.sub(r"[\s\W_]+", "", grounded_text)
+            )
+            exact_recipient_selected_by_bridge = any(
+                item.get("action") == ActionType.CLICK_TEXT.value
+                and item.get("text") == confirmed_recipient
+                and "Accessibility 精确选择联系人" in str(item.get("reason") or "")
+                for item in state.action_history
+            )
+            # Chinese OCR may drop glyphs in QQ's confirmation dialog. A
+            # successful display-scoped Accessibility exact-text click is
+            # stronger identity evidence than OCR and is bound to the same
+            # contracted contact. It may authorize only the deterministic
+            # preloaded-payload Send action below.
+            exact_recipient_visible = exact_recipient_visible or (
+                share_confirmation and exact_recipient_selected_by_bridge
+            )
+            if (
+                recipient_selected
+                and exact_recipient_visible
+                and send_button is not None
+                and confirmed_message
+                and not message_staged
+            ):
+                return [Action(
+                    ActionType.CLICK_TEXT,
+                    display_id=self.display_id,
+                    package="com.tencent.mobileqq",
+                    text="发送",
+                    capability=ActionCapability.SENSITIVE,
+                    reason="点击发送已确认且由分享意图预载的 QQ 消息",
+                )]
+            if message_staged and exact_recipient_visible and send_button:
+                return [Action(
+                    ActionType.CLICK_TEXT,
+                    display_id=self.display_id,
+                    package="com.tencent.mobileqq",
+                    text="发送",
+                    capability=ActionCapability.SENSITIVE,
+                    reason="点击发送已确认的 QQ 消息",
+                )]
         banned_signatures = [str(item) for item in state.collected_data.get("banned_actions", [])]
 
         def element_is_banned(item) -> bool:
@@ -646,5 +1562,71 @@ Agent 声称的结果：{state.collected_data.get('agent_result', '')}
                 "passed": passed,
                 "evidence": frame_path,
                 "summary": str(payload.get("evidence") or ""),
+            }],
+        )
+
+
+class QQMessageVerifier:
+    """Deterministically verify the single QQ send after it is committed."""
+
+    def __init__(self, grounder: SetOfMarkGrounder | None = None) -> None:
+        self.grounder = grounder or SetOfMarkGrounder(CommandRunner())
+
+    def verify(self, state: TaskState) -> VerificationResult:
+        frame_path = str((state.last_observation or {}).get("frame_path") or "")
+        scope = str(
+            (state.task_spec.constraints.get("sensitive_scope") if state.task_spec else "")
+            or state.goal
+        )
+        recipient_match = re.search(
+            r"(?:给|告诉)[‘'\"“]?([^，,：:\s]{1,40})[’'\"”]?(?:发|说|，|,)",
+            scope,
+        )
+        recipient = recipient_match.group(1) if recipient_match else ""
+        message = extract_confirmed_message(scope)
+        effect = state.collected_data.get("sensitive_effect")
+        committed = isinstance(effect, dict) and effect.get("phase") == "COMMITTED"
+        visible = ""
+        if frame_path and Path(frame_path).exists():
+            screen = self.grounder.ground(frame_path)
+            visible = re.sub(r"[\s\W_]+", "", "".join(item.label for item in screen.elements))
+        recipient_ok = bool(recipient and re.sub(r"[\s\W_]+", "", recipient) in visible)
+        message_ok = bool(message and re.sub(r"[\s\W_]+", "", message) in visible)
+        exact_selection = any(
+            item.get("action") == ActionType.CLICK_TEXT.value
+            and item.get("text") == recipient
+            and "Accessibility 精确选择联系人" in str(item.get("reason") or "")
+            for item in state.action_history
+        )
+        sensitive_send = any(
+            item.get("action") == ActionType.CLICK_TEXT.value
+            and item.get("text") == "发送"
+            and item.get("capability") == ActionCapability.SENSITIVE.value
+            for item in state.action_history
+        )
+        # ``COMMITTED`` is written only after QQ's exact Accessibility Send
+        # node accepts ACTION_CLICK. Together with the preceding exact-contact
+        # selection and the ACTION_SEND-preloaded contract message, this is the
+        # authoritative success boundary. OCR of the resulting blue bubble is
+        # useful extra evidence, but must not turn a successful send into a
+        # failure merely because white-on-blue Chinese text was missed.
+        send_committed = committed and exact_selection and sensitive_send
+        passed = send_committed or (committed and recipient_ok and message_ok)
+        reason = (
+            f"已向{recipient}发送“{message}”；QQ 发送按钮已接受点击"
+            if passed
+            else "QQ 发送动作已停止；最终聊天页尚未同时显示精确联系人和原文气泡"
+        )
+        if passed:
+            state.collected_data["agent_result"] = reason
+        return VerificationResult(
+            passed=passed,
+            retryable=False,
+            reason=reason,
+            evidence=[{
+                "criterion": "QQ message sent once",
+                "passed": passed,
+                "evidence": frame_path,
+                "summary": f"recipient={recipient}; message={message}; committed={committed}",
             }],
         )

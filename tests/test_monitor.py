@@ -59,3 +59,23 @@ def test_existing_user_keyboard_is_not_attributed_to_agent() -> None:
         shadow_display_id=8,
     )
     assert monitor.metrics.ime_policy_violations == 0
+
+
+def test_monitor_attributes_ime_that_appears_between_agent_actions() -> None:
+    monitor = DeviceMonitor(None)
+    first = Action(ActionType.TAP, display_id=8, x=100, y=200)
+    monitor.assess(
+        state("com.human", 1, ime_visible=False),
+        state("com.human", 2, ime_visible=False),
+        first,
+        shadow_display_id=8,
+    )
+    second = Action(ActionType.TAP, display_id=8, x=300, y=400)
+    monitor.assess(
+        state("com.human", 3, ime_display=0, ime_visible=True),
+        state("com.human", 4, ime_display=0, ime_visible=False),
+        second,
+        shadow_display_id=8,
+    )
+    assert monitor.metrics.ime_policy_violations == 1
+    assert monitor.metrics.isolation_violations == 1

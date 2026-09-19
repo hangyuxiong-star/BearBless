@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from bearbless.agent.contracts import Planner, Verifier
 from bearbless.agent.action_policy import TaskActionPolicy
@@ -19,6 +20,7 @@ from bearbless.runtime.monitor import DeviceMonitor, EventStore
 from bearbless.agent.skills import SkillRegistry
 from bearbless.runtime.observation_backend import AdbScreencapBackend
 from bearbless.runtime.shadow_display import ShadowDisplay
+from bearbless.runtime.send_confirmation import NotificationSensitiveConfirmer
 
 
 _shared_runner: CommandRunner | None = None
@@ -48,9 +50,16 @@ class RuntimeBundle:
         observer = AdbScreencapBackend(self.adb, self.display)
         self.observation_builder = TesseractObservationBuilder(self.runner)
         self.executor = GuardedExecutor(self.display, guard, inputs, observer, self.monitor, self.observation_builder)
+        self.sensitive_confirmer = NotificationSensitiveConfirmer(text_bridge)
         self.trace = TaskTrace(Path("artifacts/runs"), task_id)
 
-    def agent(self, planner: Planner, verifier: Verifier, goal: str = "") -> AgentLoop:
+    def agent(
+        self,
+        planner: Planner,
+        verifier: Verifier,
+        goal: str = "",
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> AgentLoop:
         skills = SkillRegistry(self.adb).resolve(goal)
         return AgentLoop(
             planner,
@@ -61,4 +70,6 @@ class RuntimeBundle:
             observation_builder=self.observation_builder,
             action_policy=TaskActionPolicy(),
             completion_probe=SkillRegistry(self.adb).completion_probe(skills),
+            should_cancel=should_cancel,
+            sensitive_confirmer=self.sensitive_confirmer,
         )
