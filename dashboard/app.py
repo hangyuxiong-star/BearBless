@@ -199,8 +199,11 @@ st.markdown("""
 .gb-phone { max-width:390px; margin:auto; padding:10px; border-radius:42px; background:linear-gradient(145deg,#343438,#0b0b0c 34%); border:1px solid rgba(255,255,255,.17); box-shadow:0 35px 90px rgba(0,0,0,.58), inset 0 0 0 1px rgba(255,255,255,.05); }
 .gb-phone-screen { min-height:485px; display:grid; place-items:center; overflow:hidden; border-radius:33px; background:radial-gradient(circle at 50% 35%,rgba(118,87,232,.16),transparent 36%),#080809; border:1px solid rgba(255,255,255,.07); }
 .gb-phone-idle { text-align:center; color:#74747c; }
-.gb-phone-idle .orb { width:48px; height:48px; margin:0 auto 15px; border-radius:50%; background:radial-gradient(circle at 35% 30%,#c4b5fd,#7657e8 55%,#281b67); box-shadow:0 0 40px rgba(118,87,232,.34); animation:gbFloat 3s ease-in-out infinite; }
-@keyframes gbFloat { 50%{transform:translateY(-5px);box-shadow:0 8px 48px rgba(118,87,232,.46)} }
+.gb-phone-logo { width:82px; height:82px; margin:0 auto 18px; padding:5px; border-radius:24px; background:rgba(255,255,255,.72); border:1px solid rgba(112,87,232,.12); box-shadow:0 18px 42px rgba(90,70,190,.18); animation:gbFloat 3.4s ease-in-out infinite; }
+.gb-phone-logo img { display:block; width:100%; height:100%; border-radius:19px; }
+.gb-phone-idle b { display:block; color:#29283d; font-size:1rem; letter-spacing:-.015em; }
+.gb-phone-idle small { display:block; margin-top:7px; color:#8c8b9d; font-size:.78rem; }
+@keyframes gbFloat { 50%{transform:translateY(-5px);box-shadow:0 23px 50px rgba(90,70,190,.24)} }
 .gb-current-action { padding:17px; border-radius:17px; background:linear-gradient(145deg,rgba(118,87,232,.16),rgba(22,22,23,.92)); border:1px solid rgba(167,139,250,.18); }
 .gb-action-label { color:var(--gb-purple); font-size:.67rem; font-weight:750; letter-spacing:.13em; }
 .gb-action-main { color:white; font-size:1.02rem; font-weight:630; line-height:1.35; margin:8px 0; }
@@ -334,7 +337,8 @@ hr { border-color: var(--gb-border) !important; }
 .gb-analysis-item b { display:block; color:#848697; font-size:.64rem; letter-spacing:.1em; margin-bottom:4px; }
 .gb-analysis-item div { color:#343648; font-size:.76rem; line-height:1.55; }
 .gb-screen-placeholder { background:rgba(255,255,255,.58); }
-.gb-phone { background:linear-gradient(145deg,#dedee8,#8d8d9b 35%,#2c2c35); box-shadow:0 35px 90px rgba(53,47,111,.19); }
+.gb-phone { background:linear-gradient(145deg,#f4f3fa,#cbc9d8 48%,#aaa8b8); border-color:rgba(77,70,120,.14); box-shadow:0 35px 90px rgba(53,47,111,.16),inset 0 1px 0 rgba(255,255,255,.9); }
+.gb-phone-screen { background:radial-gradient(circle at 50% 36%,rgba(129,101,234,.14),transparent 35%),linear-gradient(160deg,#ffffff 0%,#f8f7fd 56%,#f0eef9 100%); border-color:rgba(78,70,124,.09); }
 .gb-receipt { background:rgba(255,255,255,.82); box-shadow:0 20px 55px rgba(42,38,91,.08); }
 .gb-receipt-title { color:#1b1b2b; }
 .gb-proof-answer { background:#f7f7fb; border-color:rgba(54,49,96,.08); }
@@ -498,6 +502,15 @@ def human_failure_reason(state: dict) -> str:
     return reason
 
 
+def idle_phone_html(title: str, detail: str) -> str:
+    return (
+        '<div class="gb-phone"><div class="gb-phone-screen"><div class="gb-phone-idle">'
+        f'<div class="gb-phone-logo"><img src="data:image/svg+xml;base64,{icon_data}" alt="BearBless Logo"></div>'
+        f'<b>{safe_text(title)}</b><small>{safe_text(detail)}</small>'
+        '</div></div></div>'
+    )
+
+
 def render_shadow_startup(
     message: str,
     *,
@@ -509,12 +522,7 @@ def render_shadow_startup(
     _, phone_col, _ = st.columns([.78, 1.34, .88], gap="large")
     with phone_col:
         st.markdown('<div class="gb-panel-title" style="text-align:center">Agent 虚拟手机</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="gb-phone"><div class="gb-phone-screen"><div class="gb-phone-idle">'
-            f'<div class="orb"></div><b>{safe_text(title)}</b><br>'
-            f'<small>{safe_text(detail)}</small></div></div></div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(idle_phone_html(title, detail), unsafe_allow_html=True)
 
 
 @st.fragment(run_every="1s")
@@ -713,7 +721,7 @@ def render_live_workbench() -> None:
                 )
             st.image(str(live_frames[selected_frame]), caption=f"Shadow display · {live_frames[selected_frame].name}", width="stretch")
         else:
-            st.markdown('<div class="gb-phone"><div class="gb-phone-screen"><div class="gb-phone-idle"><div class="orb"></div><b>等待 Agent 虚拟屏</b><br><small>连接手机后将在这里实时出现</small></div></div></div>', unsafe_allow_html=True)
+            st.markdown(idle_phone_html("等待 Agent 虚拟屏", "连接手机后将在这里实时出现"), unsafe_allow_html=True)
 
         node_count = max(min(len(live_events), 8), 2)
         timeline = "".join(
@@ -756,12 +764,7 @@ render_live_workbench()
 
 run = latest_run()
 if run is None or st.session_state.get("hide_history_after_terminal") is True:
-    st.markdown(
-        '<div class="gb-phone"><div class="gb-phone-screen"><div class="gb-phone-idle">'
-        '<div class="orb"></div><b>BearBless 已待命</b><br><small>输入下一项任务即可开始</small>'
-        '</div></div></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(idle_phone_html("BearBless 已待命", "输入下一项任务即可开始"), unsafe_allow_html=True)
     if run is not None:
         st.stop()
 if run is None:
