@@ -26,7 +26,7 @@ flowchart LR
 - **键盘隔离：** 已专项验证 scrcpy 的 `local` 与 `hide` IME policy；华为 Android 12 均以“不受信任虚拟屏”拒绝。主路径因此使用深链、URL query、页面已有元素和可选 Accessibility Bridge `ACTION_SET_TEXT`，并以 Display 0 键盘监控熔断。`ACTION_SET_TEXT` 只避免为输入而主动点击，不被当作 IME 隔离机制。
 - **失败闭合：** 登录、验证码和人机验证转人工；隔离失败立即停止；模型格式错误与页面导航失败使用独立预算。
 
-当前目标是一个可信演示原型，不宣称生产级通用性。完整的思考过程、技术选型、困难与解决方案见 [DESIGN_JOURNEY.md](DESIGN_JOURNEY.md)；架构、决策和交付边界分别见 [ARCHITECTURE.md](ARCHITECTURE.md)、[DECISIONS.md](DECISIONS.md) 和 [DELIVERY_AUDIT.md](DELIVERY_AUDIT.md)。
+当前目标是一个可信演示原型，不宣称生产级通用性。完整的思考过程、技术选型、困难与解决方案见 [设计与复盘](docs/DESIGN_JOURNEY.md)；架构、决策和交付边界分别见 [架构说明](docs/ARCHITECTURE.md)、[决策记录](docs/DECISIONS.md) 和 [交付审计](docs/DELIVERY_AUDIT.md)。全部文档入口见 [`docs/`](docs/README.md)。
 
 当前产品回归范围冻结为四类：QQ、Wolt、音乐和时钟。餐厅地址直接从 Wolt 店铺详情页读取，不依赖地图；地图能力不作为本次交付承诺。新 App 仍可尝试通用 GUI 能力，但不计入稳定演示范围。
 
@@ -37,7 +37,8 @@ flowchart LR
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e '.[dev,dashboard]'
+# 若需要浏览器实时中文听写：pip install -e '.[voice]'
 cp .env.example .env
 
 python -m bearbless doctor

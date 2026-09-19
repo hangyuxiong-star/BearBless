@@ -1,12 +1,12 @@
 # CODEX_PROMPT.md
 
-Copy the prompt below into Codex after putting `README.md` and `PROJECT_SPEC.md` in the repository root.
+This is the historical AI-assisted build prompt. Repository documentation now lives under `docs/`; keep `README.md` at the repository root.
 
 ---
 
 You are the primary engineer for this repository.
 
-Read `README.md` and `PROJECT_SPEC.md` completely before editing anything.
+Read `README.md` and `docs/PROJECT_SPEC.md` completely before editing anything.
 
 Your job is to build **与熊同行** (English and code name: **BearBless / `bearbless`**), a non-interruptive Android agent runtime whose core requirement is:
 

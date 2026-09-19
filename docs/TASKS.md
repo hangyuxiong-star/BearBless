@@ -10,7 +10,7 @@
 - [x] Save readable and JSON diagnostic reports under `artifacts/doctor/`.
 - [x] Add mocked tests that run without a phone.
 - [x] Run `doctor` with the Huawei P40 Pro attached and review the generated report (`20260915T174812Z.json`).
-- [ ] Create a Phase 0 Git commit (repository is not currently initialized as Git).
+- [x] Preserve Phase 0 implementation and evidence in Git history.
 
 ## Mandatory next checkpoint
 
@@ -30,7 +30,7 @@ The mandatory Phase 1 checkpoint is complete.
 - [x] Add primary activity/IME device snapshot interface.
 - [x] Refactor `shadow-test` onto the replaceable backends.
 - [x] Run 12 unit tests and a real-device regression on display 15.
-- [ ] Create a Phase 2 Git commit (repository is not currently initialized as Git).
+- [x] Preserve Phase 2 runtime implementation in Git history.
 
 ## Phase 3 — Non-interference monitor and guard
 
@@ -43,7 +43,7 @@ The mandatory Phase 1 checkpoint is complete.
 - [x] Persist sanitized operational events and metrics per run.
 - [x] Connect guard, before/after snapshots, execution, attribution and fail-safe display shutdown.
 - [x] Run 20 unit tests.
-- [ ] Create a Phase 3 Git commit (repository is not currently initialized as Git).
+- [x] Preserve Phase 3 guard and monitoring implementation in Git history.
 
 ## Phase 4 — Deterministic agent architecture
 
