@@ -26,6 +26,18 @@ flowchart LR
 - **键盘隔离：** 已专项验证 scrcpy 的 `local` 与 `hide` IME policy；华为 Android 12 均以“不受信任虚拟屏”拒绝。主路径因此使用深链、URL query、页面已有元素和可选 Accessibility Bridge `ACTION_SET_TEXT`，并以 Display 0 键盘监控熔断。`ACTION_SET_TEXT` 只避免为输入而主动点击，不被当作 IME 隔离机制。
 - **失败闭合：** 登录、验证码和人机验证转人工；隔离失败立即停止；模型格式错误与页面导航失败使用独立预算。
 
+## 模型分工
+
+当前演示配置不是只使用一个模型，而是让 GUI 模型和通用视觉模型各做擅长的部分：
+
+| 模型 | 当前职责 |
+|---|---|
+| **GUI-Plus `gui-plus-2026-02-26`** | 主手机规划器；读取最新 Shadow Display 截图，每次只提出一个点击、滑动、返回或等待动作 |
+| **Qwen3-VL-Plus** | 生成 Mission Contract、选择目标应用、执行通用最终验证；当 GUI-Plus 返回非标准动作协议时，对同一截图做一次严格 JSON 兜底 |
+| **本地 Qwen3-VL 4B** | 离线开发回退；当前演示路径未启用，CPU/统一内存设备上延迟较高 |
+
+两种云模型都只能返回封闭的 `PhoneDecision`，不能直接调用 ADB。Typed Action、权限策略、Display 0/IME Guard、QQ 单次发送、闹钟幂等检查及 MediaSession 验证均由确定性代码执行。也就是说：**GUI-Plus 决定“下一步怎么操作”，Qwen 负责“理解、选择、验证和协议兜底”，Runtime 负责“能否安全执行以及是否真的完成”。**
+
 当前目标是一个可信演示原型，不宣称生产级通用性。完整的思考过程、技术选型、困难与解决方案见 [设计与复盘](docs/DESIGN_JOURNEY.md)；架构、决策和交付边界分别见 [架构说明](docs/ARCHITECTURE.md)、[决策记录](docs/DECISIONS.md) 和 [交付审计](docs/DELIVERY_AUDIT.md)。全部文档入口见 [`docs/`](docs/README.md)。
 
 当前产品回归范围冻结为四类：QQ、Wolt、音乐和时钟。餐厅地址直接从 Wolt 店铺详情页读取，不依赖地图；地图能力不作为本次交付承诺。新 App 仍可尝试通用 GUI 能力，但不计入稳定演示范围。
@@ -67,6 +79,10 @@ ADB_PATH=adb
 SHADOW_WIDTH=1080
 SHADOW_HEIGHT=2400
 SHADOW_DPI=420
+COMMAND_TIMEOUT_SECONDS=20
+DISPLAY_START_TIMEOUT_SECONDS=20
+DEVICE_RECONNECT_ATTEMPTS=5
+DEVICE_RECONNECT_DELAY_SECONDS=1.0
 ACCESSIBILITY_BRIDGE_AUTHORITY=com.bearbless.bridge.control
 
 PHONE_MODEL_PROVIDER=gui_plus
@@ -77,3 +93,13 @@ PHONE_MODEL_API_KEY=replace_me
 ```
 
 API Key 只放 `.env`，该文件已被 `.gitignore` 排除。模型替换不会绕过 Action Schema、Policy、Conflict Guard 或最终验证。
+
+## 冻结回归口令
+
+```text
+打开网易云播放：若把你
+打开Wolt找一家高评分汉堡店，读取店名评分和地址，然后去QQ发给红枣桂花熊，但只保留草稿不要发送
+设置今天18:37的闹钟
+```
+
+QQ 当前部署对外发送硬限为唯一联系人“红枣桂花熊”；收件人缺失或不同时在入队前和运行时都会失败关闭。Wolt→QQ 使用两阶段编排：先验证店名、评分、地址，再用该结构化结果构建原文消息，不会把 OCR 未验证文本直接外发。真实发送仍必须在任务中提供完整正文并通过敏感动作门禁。
