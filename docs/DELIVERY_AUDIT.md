@@ -1,27 +1,30 @@
 # BearBless 交付验收审计
 
-审计日期：2026-09-19。结论按真实代码、测试与 `artifacts/` 运行记录给出，不把 fixture 当作真机成功。
+审计日期：2026-09-20。结论按真实代码、测试与 `artifacts/` 运行记录给出，不把 fixture 当作真机成功。
 
 本次功能范围冻结为 QQ、Wolt、音乐和时钟。餐厅地址直接从 Wolt 店铺详情读取，地图不属于本次承诺范围。除此之外的新 App 不进入交付阻塞清单。
 
 | 题目要求 | 状态 | 当前证据 | 交付前动作 |
 |---|---|---|---|
-| 有人使用手机时完成真实任务 | 部分满足 | DSB、蓝牙查询、一次网易云播放有完成记录 | 录制前连续成功 3 次同一主 Demo |
-| 不抢屏幕、焦点和键盘 | 部分满足 | 虚拟屏、live-ID Guard、零回退；曾出现主屏 IME/Activity 泄漏并已记录 | 必须重跑双人并发验收，镜头同时覆盖手机与 Shadow Display |
+| 有人使用手机时完成真实任务 | 真机功能已证明，待录制 | 网易云、Wolt、时钟及两次 Wolt→QQ 草稿链路均有完成记录 | 录制时让用户持续操作 Display 0 |
+| 不抢屏幕、焦点和键盘 | 自动指标通过 | 最新四功能回归的 Display 0 动作、IME、包泄漏和隔离违规均为 0 | 最终录制仍需镜头同时覆盖实体手机与 Shadow Display |
 | 方法自选及技术判断 | 满足 | scrcpy 虚拟屏 + display-scoped input + fail-closed runtime | 答辩说明 UIAutomator/IME policy 为什么在华为不可用 |
-| 本地真机可演示 | 历史满足，当前未连接 | Huawei P40 Pro 历史 Doctor/Shadow Test 证据 | 当前 Doctor 显示无授权设备；演示前重新连接并保存新报告 |
+| 本地真机可演示 | 满足 | Huawei P40 Pro / Android 12 当前真机回归证据 | 演示前跑 `doctor` 并保存当天报告 |
 | GitHub + 清晰 commit | 部分满足 | 已初始化本地 `main` 仓库；尚无远端 | 分阶段提交、配置 GitHub 远端并推送 |
 | README 一页以内 | 已整改 | README 已压缩为架构、部署、环境变量和诚实边界 | GitHub 渲染复核 |
 | 1–2 分钟 Demo | 不满足 | 尚无最终成片 | 按 `DEMO_SCRIPT.md` 连续验收后录制 |
-| 复杂任务能力 | 实验中 | Skill、Step Check、重规划、完成探针已存在；异构成功率不足 | 不作为硬性承诺，只展示一次成功任务和失败恢复设计 |
+| 复杂任务能力 | 冻结范围满足 | Wolt→QQ 两阶段链路连续三次通过；四个冻结功能均有独立完成证据 | 答辩时明确不把未知 App 泛化能力冒充为生产级承诺 |
 
 ## 运行证据快照
 
-- 现有状态文件：48。
-- `COMPLETED`：12，其中包含 fixture；不能据此宣称 25% 真机成功率。
-- `FAILED`：32；主要失败包括 grounding、模型协议、无效果循环和完成判断。
-- 自动化测试：246 项通过（2026-09-19）；最终提交仍以 `python -m pytest -q` 的最新输出为准。
-- 当前硬件预检：ADB 未发现授权设备；因此本轮没有伪造“刚刚真机通过”的结论。
+- 自动化测试：260 项通过（2026-09-20）；最终提交仍以 `python -m pytest -q` 的最新输出为准。
+- 网易云《若把你》：`agent-b9f325b52e`、`agent-003d7887d9` 和 `agent-8822a91ca4` 连续三次完成，MediaSession 均为 `state=3` 且标题匹配。
+- Wolt：`agent-41d77de193` 与 `agent-799ae51b67`，两次均验证 Shishbar Restaurant / 9.4 / 完整地址。
+- 时钟：`agent-cdcd55ab89` 创建并验证 18:37；`agent-63f59df58e` 和 `agent-3cfb49511f` 随后两次从 Android 系统闹钟状态幂等确认已存在，均为 0 手机动作、0 重复创建。
+- Wolt→QQ 草稿：`request-9c996b50b172`、`request-b8e69dfa6661` 与 `request-7acb640577eb`，连续三次均仅选中“红枣桂花熊”，原文包含店名/评分/地址且 `sent=false`。第三次的 Wolt/QQ 子运行分别为 `agent-abfadf9945` 和 `agent-044ecdd4ee`。
+- 用户最终选择“只编辑、不发送”。`request-874268a76694` / `agent-7c8d648584` 已用最新 Wolt 结果再次完成 QQ 草稿，证据为 `recipient=红枣桂花熊; sent=false; surface=share_confirmation`。真实外发不列为当前演示承诺。
+- 上述最新运行的 `agent_actions_targeting_primary_display`、`ime_policy_violations`、`isolation_violations` 与 `primary_display_agent_package_leaks` 均为 0。
+- 时钟幂等快速路径现在与普通 Agent 运行一样原子落盘 `state.json`、`result.json` 和 `metrics.json`，Dashboard 不再只显示一个缺少原因的完成计数。
 
 ## 演示冻结范围
 
@@ -29,7 +32,7 @@
 
 **保底 Demo：Quark 打开并验证官方 DSB 页面。** 它已有较稳定隔离证据，但任务价值和 Agent 泛化展示较弱。
 
-闹钟、美团和 QQ 暂不作为录屏主任务：它们适合答辩展示失败分析与 Skill 架构，但当前成功率不足。
+建议录屏主任务为 Wolt→QQ 草稿：它同时展示跨 App 数据传递、收件人硬限、虚拟屏切换和零打扰，又不需要在录制中产生真实外发副作用。网易云《若把你》作为短链路保底。
 
 ## IME-free 链路核对
 

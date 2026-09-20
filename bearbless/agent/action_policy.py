@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import re
 
-from bearbless.message_intent import extract_confirmed_message
+from bearbless.message_intent import (
+    extract_confirmed_message,
+    extract_confirmed_recipient,
+    is_qq_draft_request,
+    require_explicit_qq_recipient,
+)
+from bearbless.config import Config
 
 from bearbless.agent.state import TaskState
 from bearbless.errors import PolicyViolation
@@ -38,7 +44,7 @@ class TaskActionPolicy:
             )
         mode = state.task_spec.task_mode if state.task_spec else TaskMode.MUTATING_TASK
         capability = action.capability
-        draft_only = any(marker in state.goal for marker in ("草稿", "不用发送", "不要发送", "不发送"))
+        draft_only = is_qq_draft_request(state.goal)
         if draft_only and capability == ActionCapability.SENSITIVE:
             raise PolicyViolation("draft-only QQ task forbids the final send action")
         if capability == ActionCapability.UNKNOWN and action.action in {
@@ -59,6 +65,11 @@ class TaskActionPolicy:
             raise PolicyViolation("sensitive capability is never auto-executed")
         if mode == TaskMode.SENSITIVE_TASK and confirmed:
             scope = str(state.task_spec.constraints.get("sensitive_scope") or state.goal)
+            if "qq" in scope.casefold():
+                try:
+                    require_explicit_qq_recipient(scope, Config.load().qq_test_recipient)
+                except ValueError as exc:
+                    raise PolicyViolation(str(exc)) from exc
             expected_message = extract_confirmed_message(scope)
             message_already_staged = any(
                 item.get("action") in {ActionType.TYPE.value, ActionType.TYPE_BOTTOM.value}
@@ -124,3 +135,10 @@ def authorize_task_start(state: TaskState) -> None:
         and state.task_spec.constraints.get("user_confirmed_sensitive_action") is not True
     ):
         raise PolicyViolation("sensitive task requires explicit human takeover before app launch")
+    if state.task_spec and state.task_spec.task_mode == TaskMode.SENSITIVE_TASK:
+        scope = str(state.task_spec.constraints.get("sensitive_scope") or state.goal)
+        if "qq" in scope.casefold():
+            try:
+                require_explicit_qq_recipient(scope, Config.load().qq_test_recipient)
+            except ValueError as exc:
+                raise PolicyViolation(str(exc)) from exc

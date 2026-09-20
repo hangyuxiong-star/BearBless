@@ -25,6 +25,13 @@ def test_map_tasks_are_rejected_with_wolt_address_guidance() -> None:
         compile_mission_contract("打开地图导航去餐厅")
 
 
+def test_qq_outbound_is_hard_restricted_to_test_contact() -> None:
+    with pytest.raises(TaskRequestError, match="红枣桂花熊"):
+        compile_mission_contract("打开QQ给其他人发消息：测试")
+    with pytest.raises(TaskRequestError, match="红枣桂花熊"):
+        compile_mission_contract("打开QQ给朋友发消息：测试")
+
+
 def test_compile_mission_contract_is_bounded_and_verifiable() -> None:
     contract = compile_mission_contract("比较三个出行方案并保存")
     assert contract.constraints["workspace"] == "shadow_display"
@@ -80,6 +87,18 @@ def test_explicit_message_contract_is_confirmed_and_scoped() -> None:
     assert contract.constraints["user_confirmed_sensitive_action"] is True
     assert "发送消息" not in contract.forbidden_actions
     assert "付款或购买" in contract.forbidden_actions
+
+
+def test_local_analysis_describes_wolt_to_qq_as_compound_chain() -> None:
+    from bearbless.dashboard_data import build_local_task_analysis
+
+    analysis = build_local_task_analysis(
+        "在wolt上找一家汉堡店，然后打开qq给红枣桂花熊发信息说晚上去这里吃"
+    )
+
+    assert "Wolt" in analysis["intent"]
+    assert "店名/评分/地址" in analysis["route"]
+    assert "红枣桂花熊" in analysis["intent"]
 
 
 def test_dynamic_contract_retries_non_object_model_response() -> None:

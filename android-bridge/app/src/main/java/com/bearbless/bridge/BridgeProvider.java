@@ -61,9 +61,30 @@ public final class BridgeProvider extends ContentProvider {
             }
             return reply;
         }
+        if ("find_text_exact_center".equals(method) && arg != null && service != null) {
+            try {
+                String[] fields = arg.split(":", 5);
+                int displayId = Integer.parseInt(fields[0]);
+                String packageName = decode(fields[1]);
+                String expectedText = decode(fields[2]);
+                boolean allowMultiple = fields.length >= 4 && "1".equals(fields[3]);
+                boolean preferBottom = fields.length == 5 && "bottom".equals(fields[4]);
+                String center = service.findExactTextCenterOnDisplay(
+                        displayId, packageName, expectedText, allowMultiple, preferBottom);
+                boolean ok = center != null && !center.startsWith("error:");
+                reply.putBoolean("ok", ok);
+                if (ok) reply.putString("center", center);
+                else reply.putString("error", center == null ? "exact-text lookup failed" : center);
+            } catch (RuntimeException error) {
+                reply.putBoolean("ok", false);
+                reply.putString("error", "exact-text lookup failed: " + error.getClass().getSimpleName());
+            }
+            return reply;
+        }
         boolean setText = "set_text".equals(method);
         boolean setBottomText = "set_text_bottom".equals(method);
-        if ((!setText && !setBottomText) || arg == null || service == null) {
+        boolean setBottomTextSilent = "set_text_bottom_silent".equals(method);
+        if ((!setText && !setBottomText && !setBottomTextSilent) || arg == null || service == null) {
             reply.putBoolean("ok", false);
             reply.putString("error", service == null ? "accessibility service is disabled" : "invalid request");
             return reply;
@@ -73,9 +94,11 @@ public final class BridgeProvider extends ContentProvider {
             int displayId = Integer.parseInt(arg.substring(0, split));
             byte[] raw = Base64.decode(arg.substring(split + 1), Base64.URL_SAFE | Base64.NO_PADDING);
             String decoded = new String(raw, StandardCharsets.UTF_8);
-            String error = setBottomText
-                    ? service.setTextOnBottomEditable(displayId, decoded)
-                    : service.setTextOnDisplay(displayId, decoded);
+            String error = setBottomTextSilent
+                    ? service.setTextOnBottomEditableSilently(displayId, decoded)
+                    : setBottomText
+                            ? service.setTextOnBottomEditable(displayId, decoded)
+                            : service.setTextOnDisplay(displayId, decoded);
             reply.putBoolean("ok", error == null);
             if (error != null) reply.putString("error", error);
         } catch (RuntimeException error) {

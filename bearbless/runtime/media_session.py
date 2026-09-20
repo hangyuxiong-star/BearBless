@@ -10,13 +10,13 @@ from bearbless.schemas import VerificationResult
 
 def requested_track(goal: str) -> str | None:
     match = re.search(
-        r"(?:播放|搜索)?歌曲(?:名)?\s*(?:[：:]\s*)?[《“\"]?"
+        r"(?:播放|搜索)(?:歌曲(?:名)?)?\s*(?:[：:]\s*)?[《“\"]?"
         r"([^，,。》”\"；;]+)",
         goal,
     )
     if not match:
         return None
-    value = match.group(1).strip()
+    value = match.group(1).strip().rstrip("》”\"")
     return value or None
 
 

@@ -4,7 +4,7 @@ from dataclasses import asdict
 import time
 
 from bearbless.errors import GuardViolation, IsolationViolation
-from bearbless.runtime.actions import Action, ActionType
+from bearbless.runtime.actions import Action, ActionCapability, ActionType
 from bearbless.runtime.guard import ConflictGuard
 from bearbless.runtime.input_backend import AdbDisplayInputBackend
 from bearbless.runtime.monitor import DeviceMonitor, Event
@@ -59,7 +59,7 @@ class GuardedExecutor:
         before = self.monitor.snapshot(monotonic_time=time.monotonic())
         result: Frame | None = None
         try:
-            result = self._dispatch(action)
+            result = self._dispatch(action, suppress_primary_ime=before.ime_visible is not True)
             self.monitor.record_agent_action(action, "ok", self._safe_payload(action))
         except Exception:
             self.monitor.record_agent_action(action, "error", self._safe_payload(action))
@@ -68,7 +68,8 @@ class GuardedExecutor:
         # a second after the input command returns.  Sample after the UI settle
         # window (which was previously spent only before frame capture), so an
         # IME rendered on Display 0 cannot slip between two actions.
-        if result is None and action.action in {
+        terminal_sensitive = action.capability == ActionCapability.SENSITIVE
+        if result is None and not terminal_sensitive and action.action in {
             ActionType.OPEN_APP, ActionType.CLICK_TEXT, ActionType.TAP, ActionType.CONDITIONAL_TAP,
             ActionType.SET_ALARM, ActionType.SWIPE, ActionType.TYPE, ActionType.TYPE_BOTTOM, ActionType.KEY, ActionType.BACK,
         }:
@@ -83,11 +84,18 @@ class GuardedExecutor:
                         "agent action caused the system keyboard to appear on Display 0"
                     )
                 raise IsolationViolation(attribution.reason)
-            if result is None:
+            # A sensitive click is the terminal action. QQ destroys its share
+            # Activity immediately after Send, so waiting and capturing here
+            # records only a black teardown surface and keeps the native
+            # scrcpy window visibly flashing. The Agent loop already retains
+            # the pre-send confirmation frame and verifies the committed exact
+            # click deterministically; return immediately so task cleanup can
+            # close the virtual display.
+            if result is None and not terminal_sensitive:
                 result = self.observer.capture(live_id)
         return result
 
-    def _dispatch(self, action: Action) -> Frame | None:
+    def _dispatch(self, action: Action, *, suppress_primary_ime: bool = False) -> Frame | None:
         display_id = action.display_id
         if action.action == ActionType.OPEN_APP:
             assert action.package is not None
@@ -121,7 +129,9 @@ class GuardedExecutor:
             self.inputs.type_text(display_id, action.text)
         elif action.action == ActionType.TYPE_BOTTOM:
             assert display_id is not None and action.text is not None
-            self.inputs.type_bottom_text(display_id, action.text)
+            self.inputs.type_bottom_text(
+                display_id, action.text, suppress_ime=suppress_primary_ime
+            )
         elif action.action in (ActionType.KEY, ActionType.BACK):
             assert display_id is not None
             self.inputs.key(display_id, action.keycode if action.action == ActionType.KEY else "BACK")

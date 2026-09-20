@@ -63,10 +63,19 @@ def resolve_explicit_app_alias(goal: str, adb: AdbClient) -> str | None:
     small, verified alias layer. Longer aliases win so a phrase such as
     ``系统设置`` cannot be shadowed by ``设置``.
     """
+    folded_goal = goal.casefold()
+    # Communication intent wins over app names occurring inside the message
+    # payload (for example “Wolt推荐：…”). Letting payload text select Wolt
+    # would route a confirmed QQ send back into the source app.
+    if (
+        "qq" in folded_goal
+        and any(term in goal for term in ("发消息", "发送消息", "发信息", "发送信息", "发给", "编辑消息草稿"))
+        and package_installed(adb, "com.tencent.mobileqq")
+    ):
+        return "com.tencent.mobileqq"
     for alias, package in MAP_PACKAGE_CANDIDATES:
         if alias in goal and package_installed(adb, package):
             return package
-    folded_goal = goal.casefold()
     for alias in sorted(SYSTEM_APP_ALIASES, key=len, reverse=True):
         package = SYSTEM_APP_ALIASES[alias]
         if alias.casefold() in folded_goal and package_installed(adb, package):

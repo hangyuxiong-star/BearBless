@@ -40,3 +40,8 @@ def test_wolt_resolves_without_model_package_guessing():
 
 def test_lowercase_qq_resolves_without_model_package_guessing():
     assert resolve_explicit_app_alias("打开qq给朋友发消息", FakeAdb()) == "com.tencent.mobileqq"
+
+
+def test_qq_send_route_ignores_other_app_names_inside_payload():
+    goal = "打开QQ给红枣桂花熊发消息：Wolt推荐：Shishbar Restaurant"
+    assert resolve_explicit_app_alias(goal, FakeAdb()) == "com.tencent.mobileqq"

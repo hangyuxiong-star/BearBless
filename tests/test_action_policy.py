@@ -64,7 +64,7 @@ def test_sensitive_task_requires_takeover_before_any_interaction():
 def test_explicitly_confirmed_message_allows_scoped_sensitive_actions():
     confirmed = state(TaskMode.SENSITIVE_TASK)
     confirmed.task_spec.constraints["user_confirmed_sensitive_action"] = True
-    confirmed.task_spec.constraints["sensitive_scope"] = "给小熊发消息：你吃饭了吗？"
+    confirmed.task_spec.constraints["sensitive_scope"] = "用QQ给红枣桂花熊发消息：你吃饭了吗？"
     authorize_task_start(confirmed)
     TaskActionPolicy().authorize(confirmed, Action(
         ActionType.TAP, display_id=8, x=1, y=1, reason="点击发送", capability=ActionCapability.SENSITIVE,
@@ -73,7 +73,7 @@ def test_explicitly_confirmed_message_allows_scoped_sensitive_actions():
         ActionType.TYPE, display_id=8, text="你吃饭了吗？", capability=ActionCapability.ENTER_TEXT,
     ))
     TaskActionPolicy().authorize(confirmed, Action(
-        ActionType.TYPE, display_id=8, text="小熊", capability=ActionCapability.ENTER_TEXT,
+        ActionType.TYPE, display_id=8, text="红枣桂花熊", capability=ActionCapability.ENTER_TEXT,
     ))
     TaskActionPolicy().authorize(confirmed, Action(
         ActionType.TAP, display_id=8, x=1, y=1,
@@ -96,7 +96,7 @@ def test_explicitly_confirmed_message_allows_scoped_sensitive_actions():
 def test_staged_sensitive_message_cannot_be_typed_twice_or_followed_by_navigation_tap():
     confirmed = state(TaskMode.SENSITIVE_TASK)
     confirmed.task_spec.constraints["user_confirmed_sensitive_action"] = True
-    confirmed.task_spec.constraints["sensitive_scope"] = "给小熊发消息：你吃饭了吗？"
+    confirmed.task_spec.constraints["sensitive_scope"] = "用QQ给红枣桂花熊发消息：你吃饭了吗？"
     confirmed.action_history.append({
         "action": "TYPE", "text": "你吃饭了吗？", "capability": "ENTER_TEXT",
     })
@@ -108,6 +108,24 @@ def test_staged_sensitive_message_cannot_be_typed_twice_or_followed_by_navigatio
         TaskActionPolicy().authorize(confirmed, Action(
             ActionType.TAP, display_id=8, x=10, y=10, capability=ActionCapability.NAVIGATE,
         ))
+
+
+def test_qq_recipient_is_dynamic_without_test_constraint(monkeypatch):
+    monkeypatch.delenv("QQ_TEST_RECIPIENT", raising=False)
+    monkeypatch.chdir("/private/tmp")
+    confirmed = state(TaskMode.SENSITIVE_TASK)
+    confirmed.task_spec.constraints["user_confirmed_sensitive_action"] = True
+    confirmed.task_spec.constraints["sensitive_scope"] = "用QQ给任意明确联系人发消息：你好"
+    authorize_task_start(confirmed)
+
+
+def test_qq_test_recipient_constraint_is_deployment_scoped(monkeypatch):
+    monkeypatch.setenv("QQ_TEST_RECIPIENT", "红枣桂花熊")
+    confirmed = state(TaskMode.SENSITIVE_TASK)
+    confirmed.task_spec.constraints["user_confirmed_sensitive_action"] = True
+    confirmed.task_spec.constraints["sensitive_scope"] = "用QQ给其他联系人发消息：你好"
+    with pytest.raises(PolicyViolation, match="红枣桂花熊"):
+        authorize_task_start(confirmed)
 
 
 def test_unknown_tap_capability_fails_closed():

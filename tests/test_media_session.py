@@ -15,6 +15,8 @@ class Adb:
 def test_requested_track_parses_chinese_music_goal():
     assert requested_track("打开网易云，播放歌曲：银河赴约") == "银河赴约"
     assert requested_track("打开网易云播放歌曲归去来兮") == "归去来兮"
+    assert requested_track("打开网易云播放：若把你") == "若把你"
+    assert requested_track("打开网易云播放《若把你》") == "若把你"
 
 
 def test_media_session_completes_playing_target_without_another_model_step():

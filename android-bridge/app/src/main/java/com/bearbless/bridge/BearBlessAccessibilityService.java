@@ -1,7 +1,11 @@
 package com.bearbless.bridge;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.graphics.Path;
 import android.graphics.Rect;
 import android.util.SparseArray;
 import android.view.accessibility.AccessibilityEvent;
@@ -31,6 +35,18 @@ public final class BearBlessAccessibilityService extends AccessibilityService {
         return setTextOnDisplay(displayId, text, true);
     }
 
+    synchronized String setTextOnBottomEditableSilently(int displayId, CharSequence text) {
+        SoftKeyboardController keyboard = getSoftKeyboardController();
+        int previousMode = keyboard.getShowMode();
+        if (!keyboard.setShowMode(SHOW_MODE_HIDDEN)) {
+            return "could not suppress the soft keyboard";
+        }
+        String error = setTextOnDisplay(displayId, text, true, true);
+        new Handler(Looper.getMainLooper()).postDelayed(
+                () -> keyboard.setShowMode(previousMode), 350L);
+        return error;
+    }
+
     synchronized String clickExactTextOnDisplay(
             int displayId, String packageName, String expectedText, boolean allowMultiple) {
         if (displayId <= 0) return "display 0 is forbidden";
@@ -46,34 +62,91 @@ public final class BearBlessAccessibilityService extends AccessibilityService {
             AccessibilityNodeInfo root = window.getRoot();
             if (root != null) collectExactTextTargets(root, packageName, normalize(expectedText), matches);
         }
-        Set<AccessibilityNodeInfo> clickable = new LinkedHashSet<>();
-        for (AccessibilityNodeInfo match : matches) {
-            AccessibilityNodeInfo target = match;
-            while (target != null && !target.isClickable()) target = target.getParent();
-            if (target != null && target.isEnabled()) clickable.add(target);
+        if (matches.isEmpty() || (!allowMultiple && matches.size() != 1)) {
+            return "expected one exact-text node, found " + matches.size();
         }
-        if (clickable.isEmpty() || (!allowMultiple && clickable.size() != 1)) {
-            return "expected one clickable exact-text node, found " + clickable.size();
-        }
-        AccessibilityNodeInfo target = null;
-        int bottom = Integer.MIN_VALUE;
-        for (AccessibilityNodeInfo candidate : clickable) {
+        // Pick the visual text occurrence before walking to a clickable
+        // ancestor. QQ can expose both labels through one common clickable
+        // container; de-duplicating ancestors first loses which occurrence
+        // was the lower recent-chat row and may click the account header.
+        AccessibilityNodeInfo selectedMatch = null;
+        int top = Integer.MAX_VALUE;
+        for (AccessibilityNodeInfo candidate : matches) {
             Rect bounds = new Rect();
             candidate.getBoundsInScreen(bounds);
             // QQ repeats the same person in “最近转发” and “最近聊天”.
-            // When the caller explicitly permits duplicate exact labels,
-            // prefer the lower node: the stable full-width recent-chat row.
-            if (bounds.bottom > bottom) {
-                target = candidate;
-                bottom = bounds.bottom;
+            // On the share surface only the upper “最近转发” avatar is a
+            // responsive share target; the lower recent-chat label may expose
+            // Accessibility text while its row ignores both ACTION_CLICK and
+            // display-scoped gestures. Prefer the top-most exact node.
+            if (bounds.top < top) {
+                selectedMatch = candidate;
+                top = bounds.top;
             }
         }
-        if (target == null) return "no clickable exact-text node";
-        boolean ok = target.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-        return ok ? null : "ACTION_CLICK rejected by exact-text node";
+        if (selectedMatch == null) return "no exact-text node selected";
+        Rect selectedBounds = new Rect();
+        selectedMatch.getBoundsInScreen(selectedBounds);
+        if (selectedBounds.isEmpty()) return "exact-text node has empty bounds";
+
+        // QQ's custom share-list rows report ACTION_CLICK as accepted while
+        // doing nothing. Preserve the exact Accessibility identity match, but
+        // dispatch a real tap at that node's visual centre on the same virtual
+        // display. GestureDescription#setDisplayId keeps the gesture away from
+        // Display 0 and avoids any model-guessed coordinates.
+        Path path = new Path();
+        path.moveTo(selectedBounds.exactCenterX(), selectedBounds.exactCenterY());
+        GestureDescription gesture = new GestureDescription.Builder()
+                .setDisplayId(displayId)
+                .addStroke(new GestureDescription.StrokeDescription(path, 0L, 60L))
+                .build();
+        boolean queued = dispatchGesture(gesture, null, null);
+        return queued ? null : "display-scoped exact-text gesture was rejected";
+    }
+
+    synchronized String findExactTextCenterOnDisplay(
+            int displayId, String packageName, String expectedText,
+            boolean allowMultiple, boolean preferBottom) {
+        if (displayId <= 0) return "error:display 0 is forbidden";
+        if (packageName == null || packageName.isEmpty()) return "error:package is required";
+        if (expectedText == null || expectedText.trim().isEmpty()) return "error:text is required";
+        SparseArray<List<AccessibilityWindowInfo>> all = getWindowsOnAllDisplays();
+        List<AccessibilityWindowInfo> windows = all.get(displayId);
+        if (windows == null || windows.isEmpty()) {
+            return "error:no accessibility windows for display " + displayId;
+        }
+        List<AccessibilityNodeInfo> matches = new ArrayList<>();
+        for (AccessibilityWindowInfo window : windows) {
+            if (window.getDisplayId() != displayId) continue;
+            AccessibilityNodeInfo root = window.getRoot();
+            if (root != null) collectExactTextTargets(root, packageName, normalize(expectedText), matches);
+        }
+        if (matches.isEmpty() || (!allowMultiple && matches.size() != 1)) {
+            return "error:expected one exact-text node, found " + matches.size();
+        }
+        AccessibilityNodeInfo selected = null;
+        Rect selectedBounds = new Rect();
+        int edge = preferBottom ? Integer.MIN_VALUE : Integer.MAX_VALUE;
+        for (AccessibilityNodeInfo candidate : matches) {
+            Rect bounds = new Rect();
+            candidate.getBoundsInScreen(bounds);
+            boolean preferred = preferBottom ? bounds.bottom > edge : bounds.top < edge;
+            if (!bounds.isEmpty() && preferred) {
+                selected = candidate;
+                selectedBounds.set(bounds);
+                edge = preferBottom ? bounds.bottom : bounds.top;
+            }
+        }
+        if (selected == null) return "error:no bounded exact-text node";
+        return selectedBounds.centerX() + "," + selectedBounds.centerY();
     }
 
     private String setTextOnDisplay(int displayId, CharSequence text, boolean preferBottom) {
+        return setTextOnDisplay(displayId, text, preferBottom, false);
+    }
+
+    private String setTextOnDisplay(
+            int displayId, CharSequence text, boolean preferBottom, boolean clearFocus) {
         if (displayId <= 0) return "display 0 is forbidden";
         SparseArray<List<AccessibilityWindowInfo>> all = getWindowsOnAllDisplays();
         List<AccessibilityWindowInfo> windows = all.get(displayId);
@@ -121,6 +194,7 @@ public final class BearBlessAccessibilityService extends AccessibilityService {
         Bundle args = new Bundle();
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
         boolean ok = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+        if (ok && clearFocus) target.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS);
         return ok ? null : "ACTION_SET_TEXT rejected by target node";
     }
 

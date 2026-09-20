@@ -14,3 +14,10 @@ def test_wolt_analysis_names_proof_fields():
     assert "Food type" in analysis["route"]
     assert "评分" in analysis["proof"]
     assert "地址" in analysis["proof"]
+
+
+def test_youtube_analysis_uses_search_deep_link_route():
+    analysis = build_local_task_analysis("去youtobe上搜索关于dtu的视频")
+    assert "YouTube" in analysis["intent"]
+    assert "搜索深链" in analysis["route"]
+    assert "不点赞" in analysis["guard"]

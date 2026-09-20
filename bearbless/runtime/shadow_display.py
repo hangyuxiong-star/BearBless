@@ -87,6 +87,7 @@ class ShadowDisplay:
         self.id: int | None = None
         self._process: subprocess.Popen[str] | None = None
         self._generation = 0
+        self._package: str | None = None
 
     @property
     def generation(self) -> int:
@@ -114,6 +115,11 @@ class ShadowDisplay:
             "--keyboard=uhid",
             "--no-clipboard-autosync",
             "--no-audio",
+            # The native scrcpy surface is the authoritative live projection.
+            # Keep decoder buffering at zero and cap at a smooth frame rate;
+            # the Dashboard separately renders isolated evidence frames.
+            "--video-buffer=0",
+            "--max-fps=60",
             "--window-title=BearBless Shadow Display",
         ])
         self._process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -123,6 +129,7 @@ class ShadowDisplay:
                 created = sorted(set(self.resolver.list_ids()) - before - {0})
                 if len(created) == 1:
                     self.id = created[0]
+                    self._package = package
                     self._generation += 1
                     return self.id
                 if self._process.poll() is not None:
@@ -152,6 +159,13 @@ class ShadowDisplay:
     def ensure(self, package: str) -> int:
         """Reuse the long-lived shadow workspace or create it once."""
         if self.id is not None and self._process is not None and self._process.poll() is None:
+            # Huawei may report a successful cross-app ``am start --display``
+            # while leaving the old app resumed. Recreate the scrcpy-owned
+            # display so ``--start-app=+package`` is authoritative whenever a
+            # new task targets another package.
+            if self._package != package:
+                self.stop()
+                return self.start(package)
             display_id = self.resolve_live_id()
             self.launch_app(package)
             return display_id
@@ -168,14 +182,61 @@ class ShadowDisplay:
         then launched onto that already-composed display.
         """
         if self.id is not None and self._process is not None and self._process.poll() is None:
+            if self._package != package:
+                self.stop()
+                display_id = self.start(bootstrap_package)
+                self._launch_staged_target(display_id, package)
+                return display_id
             display_id = self.resolve_live_id()
             self.launch_app(package)
             return display_id
         if self.id is not None or self._process is not None:
             self.stop()
         display_id = self.start(bootstrap_package)
-        self.launch_app(package)
+        self._launch_staged_target(display_id, package)
         return display_id
+
+    def _launch_staged_target(self, display_id: int, package: str) -> None:
+        """Launch and prove a target after the native bootstrap is composed.
+
+        Huawei can acknowledge ``am start --display`` before the bootstrap
+        Activity is ready and silently leave Settings resumed. A command exit
+        code is therefore not proof; the target package must occur in the
+        owned display's activity block before planning begins.
+        """
+        time.sleep(1.0)
+        for attempt in range(3):
+            self.launch_app(package)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if self._package_active_on_display(display_id, package):
+                    self._package = package
+                    return
+                time.sleep(0.25)
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+        raise ShadowDisplayError(
+            f"target package {package} did not become active on shadow display {display_id}"
+        )
+
+    def _package_active_on_display(self, display_id: int, package: str) -> bool:
+        argv = [self.config.adb_path]
+        if self.config.android_serial:
+            argv.extend(["-s", self.config.android_serial])
+        argv.extend(["shell", "dumpsys", "activity", "activities"])
+        result = self.runner.run(
+            argv,
+            category="adb",
+            timeout=self.config.command_timeout_seconds,
+        )
+        if not result.ok or not isinstance(result.stdout, str):
+            return False
+        display_match = re.search(
+            rf"Display\s+#?{display_id}\b(.*?)(?=\n\s*Display\s+#?\d+\b|\Z)",
+            result.stdout,
+            re.DOTALL | re.IGNORECASE,
+        )
+        return bool(display_match and package in display_match.group(0))
 
     def launch_app(self, package: str, uri: str | None = None) -> None:
         display_id = self.resolve_live_id()
@@ -206,6 +267,7 @@ class ShadowDisplay:
         result = self.runner.run(argv, category="adb", timeout=self.config.command_timeout_seconds)
         if not result.ok:
             raise ShadowDisplayError("secondary-display app launch failed")
+        self._package = package
 
     def launch_share_text(self, package: str, text: str) -> None:
         """Open an app's native text-share flow on the owned shadow display."""
@@ -215,6 +277,13 @@ class ShadowDisplay:
             argv.extend(["-s", self.config.android_serial])
         argv.extend([
             "shell", "am", "start", "--user", "0", "--display", str(display_id),
+            # Huawei otherwise reuses QQ's existing Display-0 task despite
+            # the requested launch display. Force a distinct document/task
+            # whose root is owned by the shadow display.
+            # This Huawei Android 12 shell exposes MULTIPLE_TASK but not the
+            # named NEW_TASK/NEW_DOCUMENT switches. Supply the documented
+            # Intent bitmask instead: NEW_TASK | MULTIPLE_TASK | NEW_DOCUMENT.
+            "-f", "0x18080000",
             "-a", "android.intent.action.SEND", "-t", "text/plain",
             # Arguments after ``adb shell`` are reconstructed into a remote
             # shell command. Quote free-form text here so spaces do not make
@@ -257,6 +326,7 @@ class ShadowDisplay:
         process, old_id = self._process, self.id
         self._process = None
         self.id = None
+        self._package = None
         if process is not None and process.poll() is None:
             process.terminate()
             try:
@@ -264,8 +334,17 @@ class ShadowDisplay:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2)
-        if old_id is not None and old_id in self.resolver.list_ids():
-            raise ShadowDisplayError(f"display {old_id} still exists after cleanup")
+        if old_id is not None:
+            # Android removes a scrcpy virtual display asynchronously after
+            # the owning process exits. Poll the exact old id briefly so a
+            # normal teardown does not fail the next task.
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if old_id not in self.resolver.list_ids():
+                    return
+                time.sleep(0.2)
+            if old_id in self.resolver.list_ids():
+                raise ShadowDisplayError(f"display {old_id} still exists after cleanup")
 
     def __enter__(self) -> "ShadowDisplay":
         self.start()

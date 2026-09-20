@@ -23,6 +23,29 @@ Coverage includes:
 - deterministic task-mode policy for read-only, mutating and sensitive tasks;
 - strict rejection of unknown phone-model decisions;
 - a ten-case heterogeneous mobile task matrix under `evals/`.
+- QQ recipient extraction and the hard allowlist for `红枣桂花熊`;
+- NetEase exact-title parsing plus ad/reward/VIP deterministic state handling;
+- Wolt 10-point rating verification and Wolt→QQ two-stage orchestration;
+- package routing, display recreation, command timeouts and read-only ADB retry rules.
+
+## Frozen physical-device regression
+
+Start one durable worker, then enqueue the frozen tasks from a second terminal:
+
+```bash
+python -m bearbless worker
+python -m bearbless enqueue --cloud-vision-consent --task '打开网易云播放：若把你'
+python -m bearbless enqueue --cloud-vision-consent --task '打开Wolt找一家高评分汉堡店，读取店名评分和地址，然后去QQ发给红枣桂花熊，但只保留草稿不要发送'
+python -m bearbless enqueue --cloud-vision-consent --task '设置今天18:37的闹钟'
+```
+
+For every resulting run, require `task_status=COMPLETED` and all of
+`agent_actions_targeting_primary_display`, `primary_display_agent_package_leaks`,
+`ime_policy_violations`, `isolation_violations`, and `guard_violations` to be zero.
+The QQ draft evidence must name only `红枣桂花熊`, reproduce the verified
+Wolt name/rating/address, and record `sent=false`. A real-send rehearsal is a
+separate sensitive test: its submitted task must contain the exact final message,
+and it may never be generalized to another recipient.
 
 ## General-agent evaluation
 

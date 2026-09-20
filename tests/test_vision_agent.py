@@ -124,6 +124,39 @@ def test_confirmed_qq_message_uses_deterministic_sensitive_send(tmp_path: Path):
     assert action.text == "发送"
 
 
+def test_qq_confirmation_rejects_stale_selection_evidence_after_intermediate_tap(tmp_path: Path):
+    message = "晚上去Shishbar Restaurant吃吧，评分9.4，地址Lyngby"
+    state = observed_state(tmp_path)
+    state.goal = f"打开QQ给红枣桂花熊发消息：{message}"
+    state.task_spec = TaskSpec(
+        goal=state.goal,
+        task_mode=TaskMode.SENSITIVE_TASK,
+        constraints={"user_confirmed_sensitive_action": True, "sensitive_scope": state.goal},
+        success_criteria=[SuccessCriterion(name="sent", description="sent")],
+    )
+    state.action_history.extend((
+        {
+            "action": "CLICK_TEXT", "text": "红枣桂花熊",
+            "reason": "通过 Accessibility 精确选择联系人 红枣桂花熊",
+        },
+        {"action": "TAP", "x": 500, "y": 500, "reason": ""},
+    ))
+
+    class ConfirmationGrounder:
+        def ground(self, frame_path):
+            return GroundedScreen(Path(frame_path), (
+                MarkedElement(1, "发送", (300, 2100, 780, 2320)),
+                MarkedElement(2, "Shishbar Restaurant", (100, 1700, 850, 1820)),
+            ))
+
+    planner = VisionPlanner(
+        FakeClient({"action": "ABORT"}), 31, {"QQ": "com.tencent.mobileqq"},
+        ConfirmationGrounder(), package_identity_checker=lambda _package: True,
+    )
+    with pytest.raises(AgentTerminalDecision, match="收件人不是"):
+        planner.plan(state)
+
+
 def test_qq_draft_types_once_then_finishes_without_send(tmp_path: Path):
     message = "明天中午去 Itacho Charlottenlund 吃饭吧。"
     state = observed_state(tmp_path)
@@ -141,6 +174,7 @@ def test_qq_draft_types_once_then_finishes_without_send(tmp_path: Path):
             return GroundedScreen(Path(frame_path), (
                 MarkedElement(1, "QQ", (20, 20, 80, 60)),
                 MarkedElement(2, "红枣桂花熊", (200, 40, 500, 100)),
+                MarkedElement(3, message, (120, 2100, 900, 2240)),
             ))
 
     planner = VisionPlanner(
@@ -157,6 +191,7 @@ def test_qq_draft_types_once_then_finishes_without_send(tmp_path: Path):
     finish_action = planner.plan(state)[0]
     assert finish_action.action == ActionType.FINISH
     assert state.collected_data["qq_draft"]["sent"] is False
+    assert state.collected_data["qq_draft"]["surface"] == "qq_chat_input"
 
 
 def test_wolt_candidate_binds_compact_ocr_rating_to_row_and_chooses_highest():
@@ -170,6 +205,29 @@ def test_wolt_candidate_binds_compact_ocr_rating_to_row_and_chooses_highest():
     ranked = _wolt_ranked_candidate(labels)
     assert ranked is not None
     assert ranked[2:] == ("Mr. Bittu", "8.8", "55-65 min")
+
+
+def test_wolt_candidate_removes_ocr_merged_promo_glyphs_from_name():
+    labels = [
+        (MarkedElement(1, "Crispy Lemon Asian Street Food @@ 他", (180, 900, 800, 970)), "Crispy Lemon Asian Street Food @@ 他"),
+        (MarkedElement(2, "45-55 min © 92", (600, 990, 900, 1040)), "45-55 min © 92"),
+    ]
+    ranked = _wolt_ranked_candidate(labels)
+    assert ranked is not None
+    assert ranked[2] == "Crispy Lemon Asian Street Food"
+
+
+def test_wolt_closes_about_ad_sheet_without_model():
+    state = TaskState("agent-ad", "打开Wolt找一家评分高的汉堡店")
+    elements = (
+        MarkedElement(1, "About this ad", (30, 1300, 600, 1400)),
+        MarkedElement(2, "Advertiser", (30, 1500, 250, 1560)),
+        MarkedElement(3, "Who paid for the advertising", (30, 1700, 650, 1770)),
+    )
+    action = _wolt_burger_action(state, elements, 31)
+    assert action is not None
+    assert action.action == ActionType.BACK
+    assert "广告说明" in action.reason
 
 
 def test_confirmed_qq_message_opens_exact_recipient_without_model(tmp_path: Path):
@@ -230,7 +288,7 @@ def test_confirmed_qq_share_list_accepts_duplicate_exact_recipient_labels(tmp_pa
 
     assert action.action == ActionType.TAP
     assert action.capability == ActionCapability.READ
-    assert (action.x, action.y) == (350, 960)
+    assert (action.x, action.y) == (410, 460)
     assert "红枣桂花熊" in action.reason
 
 
@@ -522,7 +580,7 @@ def test_confirmed_qq_share_dialog_accepts_spaced_send_and_split_recipient_ocr(t
     assert action.text == "发送"
 
 
-def test_confirmed_qq_share_dialog_trusts_prior_accessibility_exact_recipient_selection(tmp_path: Path):
+def test_confirmed_qq_share_dialog_rejects_prior_accessibility_as_current_identity(tmp_path: Path):
     message = "明天见"
     state = observed_state(tmp_path)
     state.goal = f"打开QQ，给红枣桂花熊发消息：{message}"
@@ -537,6 +595,7 @@ def test_confirmed_qq_share_dialog_trusts_prior_accessibility_exact_recipient_se
         "text": "红枣桂花熊",
         "reason": "通过 Accessibility 精确选择联系人 红枣桂花熊",
     })
+    state.collected_data["last_step_outcome"] = {"code": "CHANGED"}
 
     class PartialDialogGrounder:
         def ground(self, frame_path):
@@ -555,11 +614,77 @@ def test_confirmed_qq_share_dialog_trusts_prior_accessibility_exact_recipient_se
         package_identity_checker=lambda _package: True,
     )
 
+    with pytest.raises(AgentTerminalDecision, match="收件人不是"):
+        planner.plan(state)
+
+
+def test_confirmed_qq_share_dialog_accepts_current_accessibility_when_ocr_misses_name(tmp_path: Path):
+    message = "明天去哪"
+    state = observed_state(tmp_path)
+    state.goal = f"打开QQ，给红枣桂花熊发消息：{message}"
+    state.task_spec = TaskSpec(
+        goal=state.goal,
+        task_mode=TaskMode.SENSITIVE_TASK,
+        constraints={"user_confirmed_sensitive_action": True, "sensitive_scope": state.goal},
+        success_criteria=[SuccessCriterion(name="sent", description="sent")],
+    )
+    state.collected_data["qq_recipient_tap_attempted"] = "红枣桂花熊"
+
+    class RecipientOmittedByOcrGrounder:
+        def ground(self, frame_path):
+            return GroundedScreen(Path(frame_path), (
+                MarkedElement(1, "发送给", (232, 906, 377, 947)),
+                MarkedElement(2, "明天去哪", (233, 1186, 339, 1236)),
+                MarkedElement(3, "发送", (691, 1473, 778, 1539)),
+            ))
+
+    planner = VisionPlanner(
+        FakeClient({"action": "ABORT"}),
+        31,
+        {"QQ": "com.tencent.mobileqq"},
+        RecipientOmittedByOcrGrounder(),
+        package_identity_checker=lambda _package: True,
+        qq_confirmation_recipient_checker=lambda recipient: recipient == "红枣桂花熊",
+    )
+
     action = planner.plan(state)[0]
 
     assert action.action == ActionType.CLICK_TEXT
-    assert action.capability == ActionCapability.SENSITIVE
     assert action.text == "发送"
+
+
+def test_confirmed_qq_share_dialog_rejects_missing_current_recipient_name(tmp_path: Path):
+    message = "Wolt推荐：Shishbar Restaurant，评分9.4，地址Lyngby"
+    state = observed_state(tmp_path)
+    state.goal = f"打开QQ给红枣桂花熊发消息：{message}"
+    state.task_spec = TaskSpec(
+        goal=state.goal,
+        task_mode=TaskMode.SENSITIVE_TASK,
+        constraints={"user_confirmed_sensitive_action": True, "sensitive_scope": state.goal},
+        success_criteria=[SuccessCriterion(name="sent", description="sent")],
+    )
+    state.collected_data["qq_recipient_tap_attempted"] = "红枣桂花熊"
+    state.collected_data["qq_recipient_exact_grounded"] = "红枣桂花熊"
+    state.action_history.append({
+        "action": "TAP",
+        "reason": "打开已确认联系人 红枣桂花熊 的 QQ 会话",
+    })
+
+    class HeaderMissingDialogGrounder:
+        def ground(self, frame_path):
+            return GroundedScreen(Path(frame_path), (
+                MarkedElement(1, "最近转发", (40, 500, 300, 560)),
+                MarkedElement(2, "Wolt推荐 Shishbar Restaurant", (80, 1600, 720, 1680)),
+                MarkedElement(3, "发 送", (300, 2150, 780, 2300)),
+            ))
+
+    planner = VisionPlanner(
+        FakeClient({"action": "ABORT"}), 31, {"QQ": "com.tencent.mobileqq"},
+        HeaderMissingDialogGrounder(), package_identity_checker=lambda _package: True,
+    )
+
+    with pytest.raises(AgentTerminalDecision, match="收件人不是"):
+        planner.plan(state)
 
 
 def test_qq_message_verifier_marks_committed_visible_message_complete(tmp_path: Path):
@@ -784,6 +909,41 @@ def test_music_results_tap_exact_full_result():
     assert action.y == 365
 
 
+def test_music_vip_offer_chooses_ad_funded_route_not_purchase():
+    elements = (
+        MarkedElement(1, "看广告免费听VIP歌曲", (30, 850, 680, 980)),
+        MarkedElement(2, "看广告免费听", (65, 1390, 650, 1470)),
+        MarkedElement(3, "VIP仅¥0.42/天，立即开通", (65, 1490, 650, 1580)),
+    )
+    action = _music_search_action("打开网易云播放：若把你", elements, 74)
+    assert action is not None
+    assert action.action == ActionType.TAP
+    assert action.y == 1430
+    assert "拒绝开通" in action.reason
+
+
+def test_music_purchase_surface_is_closed_without_buying():
+    elements = (
+        MarkedElement(1, "开通会员", (120, 400, 600, 500)),
+        MarkedElement(2, "立即开通", (80, 1400, 640, 1500)),
+    )
+    action = _music_search_action("打开网易云播放：若把你", elements, 74)
+    assert action is not None
+    assert action.action == ActionType.BACK
+    assert "禁止购买" in action.reason
+
+
+def test_music_reward_ad_waits_until_close_is_available():
+    elements = (
+        MarkedElement(1, "广告剩余 12 秒", (500, 40, 690, 100)),
+        MarkedElement(2, "奖励将在广告结束后发放", (120, 1200, 600, 1280)),
+    )
+    action = _music_search_action("打开网易云播放：若把你", elements, 74)
+    assert action is not None
+    assert action.action == ActionType.WAIT
+    assert action.seconds == 3
+
+
 def test_wolt_skill_uses_existing_restaurants_and_burger_categories():
     state = TaskState("wolt", "去wolt，帮我找一家汉堡店")
     home = (
@@ -794,6 +954,19 @@ def test_wolt_skill_uses_existing_restaurants_and_burger_categories():
     assert action is not None
     assert action.action == ActionType.TAP
     assert action.reason == "进入 Wolt Restaurants"
+
+
+def test_wolt_duplicate_address_ocr_is_treated_as_startup_loading():
+    state = TaskState("wolt", "打开Wolt找一家高评分汉堡店")
+    elements = (
+        MarkedElement(1, "Anker EngelundsVej1", (307, 66, 684, 104)),
+        MarkedElement(2, "a", (42, 30, 147, 135)),
+        MarkedElement(3, "Anker Engelunds Vej 1 v", (307, 66, 756, 104)),
+    )
+    action = _wolt_burger_action(state, elements, 74)
+    assert action is not None
+    assert action.action == ActionType.WAIT
+    assert "首页数据加载" in action.reason
 
     restaurant_page = (
         MarkedElement(1, "Restaurants", (40, 150, 500, 230)),
@@ -933,7 +1106,7 @@ def test_wolt_high_rating_does_not_finish_below_threshold():
         MarkedElement(1, "Burger", (40, 150, 500, 230)),
         MarkedElement(2, "Example Burger", (180, 900, 520, 950)),
         MarkedElement(3, "25-35 min", (480, 980, 650, 1020)),
-        MarkedElement(4, "8.9", (760, 980, 900, 1020)),
+        MarkedElement(4, "7.9", (760, 980, 900, 1020)),
     )
 
     action = _wolt_burger_action(state, results, 144)

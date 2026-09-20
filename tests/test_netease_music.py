@@ -22,6 +22,13 @@ def test_resolves_exact_song_to_official_app_deep_link() -> None:
     ) == "orpheus://song/1453907054"
 
 
+def test_resolves_natural_playback_phrase_without_song_word() -> None:
+    payload = json.dumps({"result": {"songs": [{"id": 865632948, "name": "若把你"}]}}).encode()
+    assert resolve_netease_song_uri(
+        "打开网易云播放：若把你", fetch=lambda _request, _timeout: payload,
+    ) == "orpheus://song/865632948"
+
+
 def test_does_not_guess_when_search_has_no_exact_title() -> None:
     payload = json.dumps({"result": {"songs": [{"id": 1, "name": "银河赴约 Remix"}]}}).encode()
     assert resolve_netease_song_uri(

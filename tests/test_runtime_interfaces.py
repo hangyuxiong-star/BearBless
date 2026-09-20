@@ -70,6 +70,58 @@ def test_shadow_display_keeps_owned_id_during_transient_overlap() -> None:
     assert display.resolve_live_id() == 9
 
 
+def test_shadow_display_recreates_workspace_when_next_task_changes_package() -> None:
+    display = ShadowDisplay(Config())
+    display.id = 9
+    display._process = AliveProcess()
+    display._package = "com.netease.cloudmusic"
+    calls = []
+    display.stop = lambda: calls.append(("stop", None))  # type: ignore[method-assign]
+    display.start = lambda package="com.android.settings": calls.append(("start", package)) or 10  # type: ignore[method-assign]
+
+    assert display.ensure("com.wolt.android") == 10
+    assert calls == [("stop", None), ("start", "com.wolt.android")]
+
+
+def test_staged_workspace_recreates_with_native_bootstrap_on_package_change() -> None:
+    display = ShadowDisplay(Config())
+    display.id = 9
+    display._process = AliveProcess()
+    display._package = "com.netease.cloudmusic"
+    calls = []
+    display.stop = lambda: calls.append(("stop", None))  # type: ignore[method-assign]
+    display.start = lambda package="com.android.settings": calls.append(("start", package)) or 10  # type: ignore[method-assign]
+    display._launch_staged_target = lambda display_id, package: calls.append(("launch", package))  # type: ignore[method-assign]
+
+    assert display.ensure_staged("com.wolt.android") == 10
+    assert calls == [
+        ("stop", None),
+        ("start", "com.android.settings"),
+        ("launch", "com.wolt.android"),
+    ]
+
+
+def test_shadow_display_package_probe_is_scoped_to_owned_display() -> None:
+    runner = SequenceRunner([
+        Result(
+            "Display #0 (activities from top to bottom):\n"
+            "  com.wolt.android/.MainActivity\n"
+            "Display #14 (activities from top to bottom):\n"
+            "  com.android.settings/.Settings\n"
+        ),
+        Result(
+            "Display #0 (activities from top to bottom):\n"
+            "  com.huawei.android.launcher/.Launcher\n"
+            "Display #14 (activities from top to bottom):\n"
+            "  com.wolt.android/.MainActivity\n"
+        ),
+    ])
+    display = ShadowDisplay(Config(), runner)  # type: ignore[arg-type]
+
+    assert not display._package_active_on_display(14, "com.wolt.android")
+    assert display._package_active_on_display(14, "com.wolt.android")
+
+
 def test_display_listing_retries_transient_scrcpy_port_conflict(monkeypatch) -> None:
     runner = SequenceRunner([
         Result(stderr="bind: Address already in use\nERROR: Server connection failed", ok=False),
@@ -144,18 +196,31 @@ def test_accessibility_bridge_sends_unicode_without_plaintext_in_command() -> No
     assert "咖啡" not in " ".join(command)
 
 
-def test_accessibility_bridge_click_text_is_encoded_and_display_scoped() -> None:
+def test_accessibility_bridge_uses_silent_bottom_text_method_when_requested() -> None:
     adb = RecordingAdb([Result("Result: Bundle[{ok=true}]")])
+    bridge = AccessibilityTextBridge(adb)  # type: ignore[arg-type]
+    bridge.set_text_bottom(65, "输入框草稿", suppress_ime=True)
+    command = adb.calls[0]
+    assert command[command.index("--method") + 1] == "set_text_bottom_silent"
+    assert "输入框草稿" not in " ".join(command)
+
+
+def test_accessibility_bridge_click_text_is_encoded_and_display_scoped() -> None:
+    adb = RecordingAdb([
+        Result("Result: Bundle[{center=320,740, ok=true}]"),
+        Result(""),
+    ])
     bridge = AccessibilityTextBridge(adb)  # type: ignore[arg-type]
 
     bridge.click_text_exact(65, "com.tencent.mobileqq", "发送")
 
     command = adb.calls[0]
-    assert command[command.index("--method") + 1] == "click_text_exact"
+    assert command[command.index("--method") + 1] == "find_text_exact_center"
     payload = command[command.index("--arg") + 1]
     assert payload.startswith("65:")
     assert "com.tencent.mobileqq" not in payload
     assert "发送" not in payload
+    assert adb.calls[1] == ("input", "-d", "65", "tap", "320", "740")
 
 
 def test_input_backend_rejects_stale_semantic_click_before_bridge_call() -> None:

@@ -1,7 +1,22 @@
 import json
 
 from bearbless.runtime.actions import Action, ActionType
-from bearbless.runtime.monitor import DeviceState, DeviceMonitor, EventStore, attribute_primary_change
+from bearbless.runtime.monitor import (
+    DeviceState,
+    DeviceMonitor,
+    EventStore,
+    attribute_primary_change,
+    parse_primary_root_task_id,
+)
+
+
+def test_parse_primary_root_task_id_is_scoped_to_display_zero() -> None:
+    dump = """Display #0 (activities from top to bottom):
+    mResumedActivity: ActivityRecord{abc u0 com.tencent.mobileqq/.activity.QPublicTransFragmentActivity t650}
+Display #59 (activities from top to bottom):
+    mResumedActivity: ActivityRecord{def u0 com.android.settings/.Settings t999}
+"""
+    assert parse_primary_root_task_id(dump) == 650
 
 
 def state(package: str, when: float, *, ime_display: int = 8, ime_visible: bool = False) -> DeviceState:
@@ -61,7 +76,7 @@ def test_existing_user_keyboard_is_not_attributed_to_agent() -> None:
     assert monitor.metrics.ime_policy_violations == 0
 
 
-def test_monitor_attributes_ime_that_appears_between_agent_actions() -> None:
+def test_user_ime_that_appears_between_agent_actions_is_not_misattributed() -> None:
     monitor = DeviceMonitor(None)
     first = Action(ActionType.TAP, display_id=8, x=100, y=200)
     monitor.assess(
@@ -77,5 +92,7 @@ def test_monitor_attributes_ime_that_appears_between_agent_actions() -> None:
         second,
         shadow_display_id=8,
     )
-    assert monitor.metrics.ime_policy_violations == 1
-    assert monitor.metrics.isolation_violations == 1
+    assert monitor.metrics.ime_policy_violations == 0
+    assert monitor.metrics.isolation_violations == 0
+    assert monitor.events[-1].payload["ime_appeared_between_actions"] is True
+    assert monitor.events[-1].payload["ime_leaked_to_primary"] is False

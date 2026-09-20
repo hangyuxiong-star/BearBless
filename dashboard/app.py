@@ -20,6 +20,10 @@ RUNS_ROOT = Path(__file__).resolve().parents[1] / "artifacts" / "runs"
 REQUESTS_ROOT = Path(__file__).resolve().parents[1] / "artifacts" / "requests"
 ICON = Path(__file__).resolve().parents[1] / "bearbless_icon_bear.svg"
 APP_ICONS_ROOT = Path(__file__).resolve().parent / "assets" / "app_icons"
+# The web projection is evidence-frame based rather than a native SDL window.
+# A tighter fragment interval keeps newly captured Agent frames close to the
+# separately rendered scrcpy window without refreshing the whole dashboard.
+LIVE_REFRESH_SECONDS = 0.15
 REALTIME_SPEECH = components.declare_component(
     "bearbless_realtime_speech",
     path=str(Path(__file__).resolve().parent / "realtime_speech"),
@@ -48,8 +52,23 @@ def safe_text(value: object) -> str:
     return html.escape(str(value))
 
 
+def render_notice(kind: str, title: str, detail: str = "") -> None:
+    icons = {"success": "✓", "error": "!", "info": "i", "warning": "!"}
+    detail_html = f'<div class="gb-notice-detail">{safe_text(detail)}</div>' if detail else ""
+    st.markdown(
+        f'<div class="gb-notice {safe_text(kind)}">'
+        f'<div class="gb-notice-icon">{icons.get(kind, "i")}</div>'
+        f'<div class="gb-notice-copy"><div class="gb-notice-title">{safe_text(title)}</div>{detail_html}</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def image_data_uri(path: Path) -> str:
-    mime_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    mime_type = {
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
+    }.get(path.suffix.lower(), "image/jpeg")
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 
@@ -152,7 +171,7 @@ st.markdown("""
 .gb-card {
   padding: 18px 20px; border-radius: 18px; background: var(--gb-panel); border: 1px solid var(--gb-border);
 }
-.gb-app-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:0 0 20px; }
+.gb-app-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin:0 0 20px; }
 .gb-app-card { position:relative; min-height:196px; padding:18px; border-radius:24px; overflow:hidden;
   background:linear-gradient(155deg,rgba(31,31,34,.98),rgba(13,13,14,.98)); border:1px solid var(--gb-border); }
 .gb-app-card:after { content:''; position:absolute; width:130px; height:130px; right:-55px; top:-58px;
@@ -244,6 +263,9 @@ hr { border-color: var(--gb-border) !important; }
   .gb-contract-grid { grid-template-columns:1fr; }
   .gb-app-grid { grid-template-columns:1fr 1fr; }
 }
+@media (min-width:721px) and (max-width:1100px) {
+  .gb-app-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
 @media (max-width: 460px) { .gb-app-grid { grid-template-columns:1fr; } }
 
 /* Light product language derived from the BearBless launch visual. */
@@ -315,9 +337,30 @@ hr { border-color: var(--gb-border) !important; }
 [data-testid="stFormSubmitButton"] button p { white-space:nowrap; font-size:.92rem; font-weight:700; }
 [data-testid="stFormSubmitButton"] button, .stButton > button[kind="primary"] { background:linear-gradient(135deg,#8a6df1 0%,#6d59df 52%,#5f70dc 100%); box-shadow:0 14px 30px rgba(100,78,210,.25),inset 0 1px 0 rgba(255,255,255,.22); }
 [data-testid="stFormSubmitButton"] button:hover { background:linear-gradient(135deg,#9278f3,#7562e4 52%,#6879e2); box-shadow:0 17px 36px rgba(100,78,210,.30); }
-.gb-request-strip { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:18px 2px 22px; padding:12px 15px; border-radius:16px; background:linear-gradient(135deg,rgba(255,255,255,.82),rgba(249,247,255,.70)); border:1px solid rgba(115,88,214,.10); box-shadow:0 12px 34px rgba(69,53,137,.055); backdrop-filter:blur(18px); }
+.stButton > button { border-radius:14px !important; transition:transform .18s ease,box-shadow .18s ease,background .18s ease !important; }
+.stButton > button:focus, .stButton > button:focus-visible,
+[data-testid="stFormSubmitButton"] button:focus,
+[data-testid="stFormSubmitButton"] button:focus-visible { outline:0 !important; border-color:transparent !important; box-shadow:0 0 0 4px rgba(0,122,255,.14),0 14px 30px rgba(76,91,190,.18) !important; }
+.gb-notice { display:flex; align-items:flex-start; gap:13px; margin:14px 2px; padding:14px 16px; border-radius:18px;
+  background:rgba(255,255,255,.74); border:1px solid rgba(60,60,67,.10); box-shadow:0 12px 34px rgba(35,36,58,.06); backdrop-filter:blur(24px) saturate(165%); }
+.gb-notice-icon { width:26px; height:26px; flex:0 0 auto; display:grid; place-items:center; border-radius:50%; margin-top:1px;
+  color:#fff; background:#8e8e93; font-size:.76rem; font-weight:800; box-shadow:inset 0 1px 0 rgba(255,255,255,.28); }
+.gb-notice-copy { min-width:0; padding-top:2px; }
+.gb-notice-title { color:#1d1d1f; font-size:.92rem; line-height:1.42; font-weight:650; letter-spacing:-.01em; }
+.gb-notice-detail { margin-top:3px; color:#6e6e73; font-size:.78rem; line-height:1.5; }
+.gb-notice.success { border-color:rgba(52,199,89,.16); background:linear-gradient(135deg,rgba(244,255,248,.88),rgba(255,255,255,.76)); }
+.gb-notice.success .gb-notice-icon { background:#34c759; }
+.gb-notice.error { border-color:rgba(255,59,48,.14); background:linear-gradient(135deg,rgba(255,247,246,.92),rgba(255,255,255,.76)); }
+.gb-notice.error .gb-notice-icon { background:#ff453a; }
+.gb-notice.info { border-color:rgba(0,122,255,.14); background:linear-gradient(135deg,rgba(245,250,255,.92),rgba(255,255,255,.76)); }
+.gb-notice.info .gb-notice-icon { background:#0a84ff; font-family:Georgia,serif; }
+.gb-notice.warning { border-color:rgba(255,159,10,.16); background:linear-gradient(135deg,rgba(255,250,241,.92),rgba(255,255,255,.76)); }
+.gb-notice.warning .gb-notice-icon { background:#ff9f0a; }
+[data-testid="stAlert"] { padding:13px 15px !important; border-radius:18px !important; background:rgba(255,255,255,.76) !important; border:1px solid rgba(60,60,67,.10) !important; box-shadow:0 12px 34px rgba(35,36,58,.055) !important; backdrop-filter:blur(24px) saturate(165%); }
+[data-testid="stAlert"] p { font-size:.88rem !important; line-height:1.45 !important; }
+.gb-request-strip { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:16px 2px 18px; padding:14px 16px; border-radius:20px; background:rgba(255,255,255,.72); border:1px solid rgba(60,60,67,.10); box-shadow:0 14px 38px rgba(35,36,58,.06); backdrop-filter:blur(24px) saturate(165%); }
 .gb-request-main { min-width:0; display:flex; align-items:center; gap:11px; }
-.gb-request-icon { width:32px; height:32px; flex:0 0 auto; display:grid; place-items:center; border-radius:10px; color:#6551d6; background:linear-gradient(145deg,rgba(118,87,232,.14),rgba(78,177,222,.10)); font-size:.9rem; }
+.gb-request-icon { width:36px; height:36px; flex:0 0 auto; display:grid; place-items:center; border-radius:12px; color:#fff; background:linear-gradient(145deg,#7c68ee,#5c7fe8); box-shadow:0 8px 18px rgba(100,88,220,.20); font-size:.88rem; }
 .gb-request-copy { min-width:0; }
 .gb-request-title { color:#242438; font-size:.84rem; font-weight:690; }
 .gb-request-meta { margin-top:2px; color:#9395a5; font-size:.67rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -380,6 +423,7 @@ app_modules = (
     ("Wolt", image_data_uri(APP_ICONS_ROOT / "wolt.jpg"), "#10c3a5", "rgba(16,195,165,.28)", "免搜索框分类浏览", PRODUCT_CAPABILITIES[0][1], "店名 · 评分 · 营业状态 · 地址"),
     ("QQ", image_data_uri(APP_ICONS_ROOT / "qq.jpg"), "#168cff", "rgba(22,140,255,.3)", "消息草稿安全编辑", "在指定联系人会话中写入草稿，不点击发送", "联系人 · 原文草稿 · 零发送"),
     ("网易云音乐", image_data_uri(APP_ICONS_ROOT / "netease.jpg"), "#e63b32", "rgba(230,59,50,.3)", "精确歌曲深链", PRODUCT_CAPABILITIES[3][1], "MediaSession 标题与播放态"),
+    ("YouTube", image_data_uri(APP_ICONS_ROOT / "youtube.svg"), "#ff0033", "rgba(255,0,51,.28)", "免输入法搜索深链", PRODUCT_CAPABILITIES[4][1], "搜索词 · 结果页 · 可见视频"),
     ("系统时钟", image_data_uri(APP_ICONS_ROOT / "huawei-clock.png"), "#f29f3d", "rgba(242,159,61,.28)", "虚拟屏滚轮设置", PRODUCT_CAPABILITIES[1][1], "目标时间 · 已保存 · 已开启"),
 )
 capability_html = "".join(
@@ -391,7 +435,7 @@ capability_html = "".join(
 )
 st.markdown(
     f'<div class="gb-app-grid">{capability_html}</div>'
-    '<div class="gb-status"><span class="gb-dot"></span>当前范围：Wolt · 闹钟 · QQ · 音乐；餐厅地址直接来自 Wolt 店铺详情</div>',
+    '<div class="gb-status"><span class="gb-dot"></span>当前范围：Wolt · 闹钟 · QQ · 网易云音乐 · YouTube；餐厅地址直接来自 Wolt 店铺详情</div>',
     unsafe_allow_html=True,
 )
 speech_result = REALTIME_SPEECH(
@@ -479,7 +523,11 @@ if contract_payload:
         st.session_state["hide_history_after_terminal"] = False
         st.session_state.pop("cleared_terminal_key", None)
         st.session_state.pop("cleared_request_key", None)
-        st.success(f"任务已进入队列：{request_path.stem}。现在无需继续操作 Dashboard。")
+        render_notice(
+            "success",
+            "任务已交给 BearBless",
+            f"{request_path.stem} · 可以继续使用手机，无需停留在此页面",
+        )
         del st.session_state["mission_contract"]
 
 def event_reason(event: dict) -> str:
@@ -518,14 +566,14 @@ def render_shadow_startup(
     detail: str = "首帧生成后会自动显示在这里",
 ) -> None:
     """Keep the virtual-phone stage visible before the first run frame exists."""
-    st.info(message, icon="🐻")
+    render_notice("info", message)
     _, phone_col, _ = st.columns([.78, 1.34, .88], gap="large")
     with phone_col:
         st.markdown('<div class="gb-panel-title" style="text-align:center">Agent 虚拟手机</div>', unsafe_allow_html=True)
         st.markdown(idle_phone_html(title, detail), unsafe_allow_html=True)
 
 
-@st.fragment(run_every="1s")
+@st.fragment(run_every=LIVE_REFRESH_SECONDS)
 def render_live_workbench() -> None:
     newest_requests = sorted(
         REQUESTS_ROOT.glob("request-*.json"),
@@ -557,11 +605,10 @@ def render_live_workbench() -> None:
         request_key = str(newest_request.get("request_id") or "unknown-request")
         if st.session_state.get("cleared_request_key") == request_key:
             return
-        st.error(
-            f"任务未启动：{newest_request.get('error') or '启动前检查失败'}",
-            icon="⚠️",
-        )
-        st.caption("失败原因将保留在当前页面，直到你手动清除或提交新任务。")
+        raw_error = str(newest_request.get("error") or "启动前检查失败")
+        if "QQ is currently foreground on Display 0" in raw_error:
+            raw_error = "主屏正在使用 QQ，为避免打扰，任务没有启动"
+        render_notice("error", "任务未启动", raw_error)
         render_shadow_startup(
             "任务在虚拟屏创建前停止，因此本次没有可展示的屏幕帧。",
             title="虚拟屏未创建",
@@ -700,9 +747,14 @@ def render_live_workbench() -> None:
 
     with phone_col:
         st.markdown('<div class="gb-panel-title" style="text-align:center">Agent 虚拟手机</div>', unsafe_allow_html=True)
+        if status not in {"COMPLETED", "FAILED"}:
+            st.caption("低延迟实时画面：BearBless Shadow Display 原生窗口 · 此处为隔离证据帧")
         if live_frames:
+            # While a task is active, always render the newest frame directly.
+            # A persistent slider keeps its previous selection when new options
+            # arrive, which made the web projection appear one frame behind.
             selected_frame = len(live_frames) - 1
-            if len(live_frames) > 1:
+            if status in {"COMPLETED", "FAILED"} and len(live_frames) > 1:
                 frame_labels = []
                 action_history = live_state.get("action_history", [])
                 for index, frame in enumerate(live_frames):
@@ -718,8 +770,16 @@ def render_live_workbench() -> None:
                     options=range(len(live_frames)),
                     value=len(live_frames) - 1,
                     format_func=lambda index: frame_labels[index],
+                    key=f"frame-replay:{live_run.name}",
                 )
-            st.image(str(live_frames[selected_frame]), caption=f"Shadow display · {live_frames[selected_frame].name}", width="stretch")
+            selected_path = live_frames[selected_frame]
+            # Supplying bytes prevents the frontend/media cache from serving an
+            # older image when the latest screenshot is replaced on disk.
+            st.image(
+                selected_path.read_bytes(),
+                caption=f"Shadow display · {selected_path.name}",
+                width="stretch",
+            )
         else:
             st.markdown(idle_phone_html("等待 Agent 虚拟屏", "连接手机后将在这里实时出现"), unsafe_allow_html=True)
 

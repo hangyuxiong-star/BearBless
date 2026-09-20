@@ -22,14 +22,148 @@ from bearbless.runtime.device_supervisor import DeviceSupervisor
 from bearbless.runtime.actions import Action, ActionCapability, ActionType
 from bearbless.runtime.packages import list_installed_packages, resolve_browser_package, resolve_explicit_app_alias
 from bearbless.runtime.user_attention import UserAttentionNotifier, login_takeover_required
-from bearbless.runtime.monitor import Event
+from bearbless.runtime.monitor import Event, parse_primary_root_task_id
 from bearbless.runtime.netease_music import resolve_netease_song_uri
-from bearbless.schemas import ExpectedOutcome, SuccessCriterion, TaskSpec
-from bearbless.message_intent import extract_confirmed_message
+from bearbless.schemas import ExpectedOutcome, SuccessCriterion, TaskMode, TaskSpec
+from bearbless.message_intent import (
+    extract_confirmed_message,
+    is_qq_draft_request,
+    is_wolt_to_qq_request,
+    require_explicit_qq_recipient,
+)
 from datetime import datetime, timezone
 
 
 DEFAULT_ROUTE_URL = "https://www.dsb.dk/find-produkter-og-services/dsb-udland/tyskland/hamborg/"
+
+
+def recover_stale_qq_share_task(adb: AdbClient, primary_activity: str | None) -> bool:
+    """Remove only the transient QQ share task left by our last failed launch.
+
+    Normal QQ screens are deliberately excluded because those may belong to
+    the user. The dedicated share root task can be removed without stopping
+    the user's whole QQ process.
+    """
+    if not primary_activity or not primary_activity.endswith("QPublicTransFragmentActivity"):
+        return False
+    activities = adb.shell("dumpsys", "activity", "activities")
+    if not activities.ok or not isinstance(activities.stdout, str):
+        return False
+    task_id = parse_primary_root_task_id(activities.stdout)
+    if task_id is None:
+        return False
+    result = adb.shell("cmd", "activity", "stack", "remove", str(task_id))
+    return result.ok
+
+
+def is_wolt_to_qq_task(goal: str) -> bool:
+    """Backward-compatible wrapper around the shared request classifier."""
+    return is_wolt_to_qq_request(goal)
+
+
+def wolt_qq_message(
+    restaurant: dict[str, object], *, dinner_invitation: bool = False, invitation_time: str = "晚上"
+) -> str:
+    """Build the only allowed payload from verified Wolt fields."""
+    name = str(restaurant.get("name") or "").strip()
+    rating = str(restaurant.get("rating") or "").strip()
+    address = str(restaurant.get("address") or "").strip()
+    if not all((name, rating, address)):
+        raise RuntimeError("Wolt 结果缺少店名、评分或地址，禁止进入 QQ 发送阶段")
+    if dinner_invitation:
+        return f"{invitation_time}去{name}吃吧，评分{rating}，地址{address}"
+    return f"Wolt推荐：{name}，评分{rating}，地址{address}"
+
+
+def wolt_requested_category(goal: str) -> tuple[str, str]:
+    folded = goal.casefold()
+    if any(term in folded for term in ("中餐", "中式", "chinese")):
+        return "中餐店", "中餐店"
+    if any(term in folded for term in ("japanese", "japanse", "日料", "日本料理", "日餐")):
+        return "日料店", "日料店"
+    return "汉堡店", "汉堡店"
+
+
+def run_wolt_to_qq_task(
+    goal: str,
+    task_spec: TaskSpec | None,
+    should_cancel: Callable[[], bool] | None,
+) -> TaskState:
+    """Execute verified Wolt research followed by one scoped QQ send."""
+    try:
+        recipient = require_explicit_qq_recipient(goal, Config.load().qq_test_recipient)
+    except ValueError as exc:
+        raise PermissionError(str(exc)) from exc
+    cloud_consent = bool(task_spec and task_spec.constraints.get("cloud_vision_consent") is True)
+    base_constraints = {
+        "workspace": "shadow_display",
+        "human_priority": True,
+        "cloud_vision_consent": cloud_consent,
+        "compound_parent_goal": goal,
+    }
+    category_goal, category_label = wolt_requested_category(goal)
+    wolt_goal = f"打开Wolt找一家高评分{category_goal}，告诉我店名、评分和地址，不下单"
+    wolt_spec = TaskSpec(
+        goal=wolt_goal,
+        constraints=base_constraints,
+        allowed_actions=["浏览 Wolt 餐厅分类", f"比较{category_label}评分", "读取店名、评分和地址"],
+        forbidden_actions=["下单", "加入购物车", "付款", "操作 Display 0", "读取系统剪贴板"],
+        success_criteria=[
+            SuccessCriterion(name="wolt_verified", description="店名、评分和地址均来自 Wolt 商家页"),
+            SuccessCriterion(name="zero_interruption", description="Agent 对用户主屏的操作次数为 0"),
+        ],
+        interruption_budget=0,
+        task_mode=TaskMode.READ_ONLY_QUERY,
+    )
+    wolt_state = run_general_device_task(wolt_goal, wolt_spec, should_cancel)
+    if wolt_state.status != TaskStatus.COMPLETED:
+        raise RuntimeError(f"Wolt 子任务未完成，禁止进入 QQ：{wolt_state.failure_reason or '未知失败'}")
+    restaurant = wolt_state.collected_data.get("wolt_restaurant")
+    if not isinstance(restaurant, dict):
+        raise RuntimeError("Wolt 子任务没有产生可验证餐厅结果，禁止进入 QQ")
+    dinner_invitation = "晚上去这吃" in goal or bool(re.search(r"晚上去.+吃", goal))
+    invitation_time = "明天晚上" if "明天晚上" in goal else "晚上"
+    message = wolt_qq_message(
+        restaurant, dinner_invitation=dinner_invitation, invitation_time=invitation_time
+    )
+    draft_only = is_qq_draft_request(goal)
+    qq_goal = (
+        f"打开QQ给{recipient}编辑消息草稿：{message}，不要发送"
+        if draft_only
+        else f"打开QQ给{recipient}发消息：{message}"
+    )
+    qq_spec = TaskSpec(
+        goal=qq_goal,
+        constraints={
+            **base_constraints,
+            "user_confirmed_sensitive_action": not draft_only,
+            "sensitive_scope": qq_goal,
+            "compound_wolt_result": dict(restaurant),
+        },
+        allowed_actions=[
+            f"仅为{recipient}准备由 Wolt 验证结果生成的原文草稿"
+            if draft_only else
+            f"仅向{recipient}发送一次由 Wolt 验证结果生成的原文消息"
+        ],
+        forbidden_actions=["向其他联系人发送", "改写消息", "发送第二条消息", "操作 Display 0", "读取系统剪贴板"],
+        success_criteria=[
+            SuccessCriterion(
+                name="qq_message_drafted" if draft_only else "qq_message_sent_once",
+                description=(
+                    f"为{recipient}准备完整 Wolt 结果且未发送"
+                    if draft_only else f"仅向{recipient}提交一次完整 Wolt 结果"
+                ),
+            ),
+            SuccessCriterion(name="zero_interruption", description="Agent 对用户主屏的操作次数为 0"),
+        ],
+        interruption_budget=0,
+        task_mode=TaskMode.MUTATING_TASK if draft_only else TaskMode.SENSITIVE_TASK,
+    )
+    qq_state = run_general_device_task(qq_goal, qq_spec, should_cancel)
+    qq_state.collected_data["compound_parent_goal"] = goal
+    qq_state.collected_data["compound_wolt_result"] = dict(restaurant)
+    qq_state.collected_data["compound_message"] = message
+    return qq_state
 
 
 def resolve_youtube_search_uri(goal: str) -> str | None:
@@ -60,7 +194,10 @@ def requires_staged_shadow_start(package: str) -> bool:
     # Wolt's WebView needs a composed native surface first. Huawei Clock is a
     # native app and must be the initial host: this device ignores a later
     # cross-app ``am start --display`` and otherwise leaves Settings visible.
-    return package == "com.wolt.android"
+    # QQ can likewise leave its SplashActivity attached but render an empty
+    # surface when it is the initial virtual-display host. Bootstrapping with
+    # Settings first gives the real inbox Activity a composed display.
+    return package in {"com.wolt.android", "com.tencent.mobileqq"}
 
 
 def run_general_device_task(
@@ -68,6 +205,8 @@ def run_general_device_task(
     task_spec: TaskSpec | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> TaskState:
+    if is_wolt_to_qq_task(goal):
+        return run_wolt_to_qq_task(goal, task_spec, should_cancel)
     task_id = f"agent-{uuid.uuid4().hex[:10]}"
     config = Config.load()
     if config.phone_model_provider != "ollama" and not (
@@ -132,20 +271,55 @@ def run_general_device_task(
             state.status = TaskStatus.COMPLETED
             bundle.monitor.metrics.task_status = state.status.value
             bundle.monitor.metrics.verification_attempts = 1
+            # Fast paths must leave the same auditable artifact set as the
+            # normal Agent loop. The dashboard and delivery audit consume all
+            # three files; metrics alone can prove isolation but not why the
+            # task was considered complete.
+            bundle.trace.save_state(state)
+            bundle.trace.save_result(preflight_result)
             bundle.store.save_metrics(bundle.monitor.metrics)
             return state
     try:
         primary_before = bundle.monitor.snapshot(monotonic_time=time.monotonic())
-        display_id = (
-            bundle.display.ensure_staged(package)
-            if requires_staged_shadow_start(package)
-            else bundle.display.ensure(package)
+        qq_draft = package == "com.tencent.mobileqq" and is_qq_draft_request(goal)
+        qq_direct_share = bool(
+            package == "com.tencent.mobileqq"
+            and task_spec
+            and task_spec.task_mode.value == "SENSITIVE_TASK"
+            and not qq_draft
         )
+        # QQ's JumpActivity starts QPublicTransFragmentActivity internally
+        # without forwarding ActivityOptions.  If QQ already has a process or
+        # task rooted on Display 0, that second hop silently returns to the
+        # primary display even though ACTION_SEND itself used --display.  A
+        # scrcpy ``+package`` cold start makes the QQ process originate on the
+        # owned display, so its internal share Activity inherits the shadow
+        # workspace.  Never force that cold start while the user is currently
+        # looking at QQ on Display 0.
+        if qq_direct_share:
+            if primary_before.primary_package == package:
+                recovered = recover_stale_qq_share_task(bundle.adb, primary_before.primary_activity)
+                if recovered:
+                    bundle.monitor.record(Event(
+                        datetime.now(timezone.utc).isoformat(), "system", 0,
+                        "stale_qq_share_task_recovered",
+                        {"activity": primary_before.primary_activity}, "removed",
+                    ))
+                    time.sleep(0.25)
+                    primary_before = bundle.monitor.snapshot(monotonic_time=time.monotonic())
+                if primary_before.primary_package == package:
+                    raise RuntimeError(
+                        "QQ is currently foreground on Display 0; refusing to interrupt the user"
+                    )
+            display_id = bundle.display.ensure(package)
+        else:
+            display_id = (
+                bundle.display.ensure_staged(package)
+                if requires_staged_shadow_start(package)
+                else bundle.display.ensure(package)
+            )
         state.shadow_display_id = display_id
         bundle.monitor.metrics.shadow_display_id = display_id
-        qq_draft = package == "com.tencent.mobileqq" and any(
-            marker in goal for marker in ("草稿", "不用发送", "不要发送", "不发送")
-        )
         if (
             package == "com.tencent.mobileqq"
             and task_spec
@@ -155,13 +329,17 @@ def run_general_device_task(
             confirmed_message = extract_confirmed_message(scope)
             if not confirmed_message:
                 raise RuntimeError("QQ 发送任务缺少已确认的消息原文")
-            # QQ's cold-start Activity can overwrite an ACTION_SEND delivered
-            # during process initialization and leave us on the normal inbox.
-            # Wait for the isolated process to settle before opening its
-            # package-scoped share flow; this does not touch Display 0.
-            time.sleep(2)
-            bundle.display.launch_share_text(package, confirmed_message)
-            state.collected_data["app_skill_route"] = "qq_share_draft" if qq_draft else "qq_share_text"
+            if qq_draft:
+                # A draft belongs in the real conversation editor. ACTION_SEND
+                # only produces a share-confirmation surface, which is not a
+                # persisted QQ input-box draft.
+                state.collected_data["app_skill_route"] = "qq_chat_input_draft"
+            else:
+                # QQ's cold-start Activity can overwrite an ACTION_SEND delivered
+                # during process initialization and leave us on the normal inbox.
+                time.sleep(2)
+                bundle.display.launch_share_text(package, confirmed_message)
+                state.collected_data["app_skill_route"] = "qq_share_text"
         if app_uri:
             state.collected_data["app_skill_route"] = (
                 "youtube_search_deep_link"
@@ -179,7 +357,15 @@ def run_general_device_task(
                 state.collected_data["app_skill_route"] = "wolt_burger_categories"
         if package == "com.huawei.deskclock" and "闹钟" in goal:
             state.collected_data["app_skill_route"] = "huawei_alarm_picker"
-        primary_after = bundle.monitor.snapshot(monotonic_time=time.monotonic())
+        # Huawei can flash an Activity on Display 0 and move it away again
+        # before a single post-launch snapshot. Sample the high-risk startup
+        # window so transient same-package Activity hijacks fail closed too.
+        primary_samples = [bundle.monitor.snapshot(monotonic_time=time.monotonic())]
+        if package == "com.tencent.mobileqq" and state.collected_data.get("app_skill_route") == "qq_share_text":
+            for _ in range(7):
+                time.sleep(0.25)
+                primary_samples.append(bundle.monitor.snapshot(monotonic_time=time.monotonic()))
+        primary_after = primary_samples[-1]
         if (
             primary_before.ime_visible is not True
             and primary_after.ime_visible is True
@@ -197,7 +383,15 @@ def run_general_device_task(
                 "blocked",
             ))
             raise RuntimeError("shadow launch caused the system IME to appear on Display 0")
-        if primary_after.primary_package == package:
+        primary_leak = next((
+            sample for sample in primary_samples
+            if sample.primary_package == package
+            and (
+                primary_before.primary_package != package
+                or sample.primary_activity != primary_before.primary_activity
+            )
+        ), None)
+        if primary_leak is not None:
             bundle.monitor.metrics.agent_actions_targeting_primary_display += 1
             bundle.monitor.metrics.primary_display_agent_package_leaks += 1
             bundle.monitor.metrics.isolation_violations += 1
@@ -209,7 +403,9 @@ def run_general_device_task(
                 "startup_isolation_violation",
                 {
                     "before": primary_before.primary_package,
-                    "after": primary_after.primary_package,
+                    "after": primary_leak.primary_package,
+                    "before_activity": primary_before.primary_activity,
+                    "after_activity": primary_leak.primary_activity,
                     "target": package,
                 },
                 "blocked",
@@ -295,6 +491,23 @@ def run_general_device_task(
                 )
                 return bool(display_match and expected_package in display_match.group(0))
 
+            def qq_confirmation_recipient_in_sheet(recipient: str) -> bool:
+                """Require the bottom-most exact name to belong to QQ's modal."""
+                try:
+                    bridge = bundle.executor.inputs.text_bridge
+                    if bridge is None or not bridge.available():
+                        return False
+                    _x, y = bridge.find_text_exact_center(
+                        display_id,
+                        "com.tencent.mobileqq",
+                        recipient,
+                        allow_multiple=True,
+                        prefer_bottom=True,
+                    )
+                    return y >= int(config.shadow_height * 0.62)
+                except Exception:
+                    return False
+
             planner = VisionPlanner(
                 client,
                 display_id,
@@ -303,6 +516,7 @@ def run_general_device_task(
                 skill_instructions=tuple(skill.instruction for skill in skills)
                 + ((task_profile.planner_instruction(),) if task_profile is not None else ()),
                 package_identity_checker=package_active_on_shadow,
+                qq_confirmation_recipient_checker=qq_confirmation_recipient_in_sheet,
             )
             wolt_criteria = {
                 "wolt_burger_categories": "Wolt Burger results",
@@ -341,11 +555,17 @@ def run_general_device_task(
         bundle.store.save_metrics(bundle.monitor.metrics)
         return result
     finally:
-        # Successful media tasks intentionally keep their shadow display alive
-        # so playback continues.  A failed run must never be reused: on Huawei
-        # QQ can remain in a resumed SplashActivity with no rendered/touchable
-        # window, making every later observation permanently white.
-        if result is None or result.status.value == "FAILED":
+        # Only successful playback tasks keep the virtual display alive.
+        # Transient QQ share Activities finish onto an empty task after Send;
+        # leaving scrcpy alive produces a persistent black flashing window.
+        # All non-media workspaces are therefore closed at task completion.
+        keep_for_media = bool(
+            result is not None
+            and result.status.value == "COMPLETED"
+            and state.collected_data.get("app_skill_route")
+            in {"netease_exact_song_deep_link", "youtube_search_deep_link"}
+        )
+        if not keep_for_media:
             try:
                 bundle.display.stop()
             except Exception as exc:

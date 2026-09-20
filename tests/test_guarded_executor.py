@@ -1,7 +1,7 @@
 import pytest
 
 from bearbless.errors import GuardViolation
-from bearbless.runtime.actions import Action, ActionType
+from bearbless.runtime.actions import Action, ActionCapability, ActionType
 from bearbless.runtime.guard import ConflictGuard
 from bearbless.runtime.guarded_executor import GuardedExecutor
 from bearbless.runtime.monitor import DeviceMonitor, DeviceState
@@ -29,9 +29,11 @@ class Inputs:
 class Observer:
     def __init__(self):
         self.identity_checks = []
+        self.capture_calls = []
     def assert_isolated(self, display_id):
         self.identity_checks.append(display_id)
     def capture(self, display_id):
+        self.capture_calls.append(display_id)
         from bearbless.runtime.observation_backend import Frame
         return Frame(display_id, "now", b"\x89PNGfixture")
 
@@ -84,3 +86,19 @@ def test_executor_dispatches_semantic_click_to_shadow_display() -> None:
 
     assert inputs.semantic_clicks == [(8, "com.tencent.mobileqq", "发送", False)]
     assert observer.identity_checks == [8]
+
+
+def test_terminal_sensitive_click_does_not_capture_qq_black_teardown_frame() -> None:
+    executor, _, inputs, _, observer = make_executor()
+
+    frame = executor.execute(Action(
+        ActionType.CLICK_TEXT,
+        display_id=8,
+        package="com.tencent.mobileqq",
+        text="发送",
+        capability=ActionCapability.SENSITIVE,
+    ))
+
+    assert frame is None
+    assert inputs.semantic_clicks == [(8, "com.tencent.mobileqq", "发送", False)]
+    assert observer.capture_calls == []

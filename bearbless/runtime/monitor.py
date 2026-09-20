@@ -76,6 +76,14 @@ def parse_primary_activity(text: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def parse_primary_root_task_id(text: str) -> int | None:
+    """Return Display 0's resumed root-task id from an activity dump."""
+    display_zero = re.search(r"Display #0.*?(?=\n\s*Display #\d+|\Z)", text, re.DOTALL)
+    scope = display_zero.group(0) if display_zero else text
+    match = re.search(r"mResumedActivity:.*?\bt(\d+)\}", scope)
+    return int(match.group(1)) if match else None
+
+
 def attribute_primary_change(
     before: DeviceState,
     after: DeviceState,
@@ -177,7 +185,11 @@ class DeviceMonitor:
             and before.ime_visible is True
             and before.ime_target_display_id == 0
         )
-        ime_leaked_to_primary = ime_became_visible_after_action or ime_appeared_between_actions
+        # A transition observed before the current action belongs to the idle
+        # interval and may be the human typing on Display 0. It cannot be
+        # causally attributed to the action that has not run yet. Only the
+        # immediate before/after transition is an Agent IME leak.
+        ime_leaked_to_primary = ime_became_visible_after_action
         if ime_leaked_to_primary:
             self.metrics.ime_policy_violations += 1
             self.metrics.isolation_violations += 1

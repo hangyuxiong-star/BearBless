@@ -30,9 +30,12 @@ class AccessibilityTextBridge:
     def set_text(self, display_id: int, text: str) -> None:
         self._set_text(display_id, text, method="set_text")
 
-    def set_text_bottom(self, display_id: int, text: str) -> None:
+    def set_text_bottom(self, display_id: int, text: str, *, suppress_ime: bool = False) -> None:
         """Write only to the lowest editable node on the shadow display."""
-        self._set_text(display_id, text, method="set_text_bottom")
+        self._set_text(
+            display_id, text,
+            method="set_text_bottom_silent" if suppress_ime else "set_text_bottom",
+        )
 
     def request_send_confirmation(self, token: str, recipient: str, message: str) -> None:
         fields = (token, self._encode(recipient), self._encode(message))
@@ -45,16 +48,35 @@ class AccessibilityTextBridge:
             raise InputBackendError(output.strip() or "could not post send confirmation")
 
     def click_text_exact(self, display_id: int, package: str, text: str, *, allow_multiple: bool = False) -> None:
+        x, y = self.find_text_exact_center(
+            display_id, package, text, allow_multiple=allow_multiple,
+        )
+        result = self.adb.shell("input", "-d", str(display_id), "tap", str(x), str(y))
+        if not result.ok:
+            raise InputBackendError("display-scoped exact-text tap failed")
+
+    def find_text_exact_center(
+            self, display_id: int, package: str, text: str, *,
+            allow_multiple: bool = False, prefer_bottom: bool = False,
+    ) -> tuple[int, int]:
         fields = (str(display_id), self._encode(package), self._encode(text))
         if allow_multiple:
             fields = (*fields, "1")
+        elif prefer_bottom:
+            fields = (*fields, "0")
+        if prefer_bottom:
+            fields = (*fields, "bottom")
         result = self.adb.shell(
             "content", "call", "--uri", f"content://{self.authority}",
-            "--method", "click_text_exact", "--arg", ":".join(fields),
+            "--method", "find_text_exact_center", "--arg", ":".join(fields),
         )
         output = self._output(result)
         if not result.ok or "ok=true" not in output:
-            raise InputBackendError(output.strip() or "exact-text accessibility click failed")
+            raise InputBackendError(output.strip() or "exact-text accessibility lookup failed")
+        match = re.search(r"center=(\d+),(\d+)", output)
+        if not match:
+            raise InputBackendError("exact-text accessibility lookup returned no center")
+        return int(match.group(1)), int(match.group(2))
 
     def send_confirmation_status(self, token: str) -> str:
         result = self.adb.shell(
@@ -143,7 +165,7 @@ class AdbDisplayInputBackend:
         escaped = text.replace("%", "%25").replace(" ", "%s")
         self._dispatch(live_id, "text", escaped)
 
-    def type_bottom_text(self, display_id: int, text: str) -> None:
+    def type_bottom_text(self, display_id: int, text: str, *, suppress_ime: bool = False) -> None:
         live_id = self.display.resolve_live_id()
         if display_id != live_id:
             raise InputBackendError(
@@ -151,7 +173,7 @@ class AdbDisplayInputBackend:
             )
         if self.text_bridge is None or not self.text_bridge.available():
             raise InputBackendError("BearBless accessibility bridge is unavailable")
-        self.text_bridge.set_text_bottom(live_id, text)
+        self.text_bridge.set_text_bottom(live_id, text, suppress_ime=suppress_ime)
 
     def key(self, display_id: int, keycode: str | int) -> None:
         self._dispatch(display_id, "keyevent", str(keycode))

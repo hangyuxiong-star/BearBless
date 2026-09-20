@@ -8,7 +8,13 @@ import uuid
 
 from bearbless.agent.policy import infer_task_mode
 from bearbless.schemas import SuccessCriterion, TaskSpec
-from bearbless.message_intent import extract_confirmed_message
+from bearbless.message_intent import (
+    extract_confirmed_message,
+    extract_confirmed_recipient,
+    is_wolt_to_qq_request,
+    require_explicit_qq_recipient,
+)
+from bearbless.config import Config
 
 
 class TaskRequestError(ValueError):
@@ -18,6 +24,15 @@ class TaskRequestError(ValueError):
 def build_local_task_analysis(goal: str) -> dict[str, object]:
     """Explain the execution route without depending on a cloud model."""
     folded = goal.casefold()
+    if is_wolt_to_qq_request(goal):
+        recipient = extract_confirmed_recipient(goal) or "契约指定联系人"
+        return {
+            "intent": f"先在 Wolt 验证餐厅，再把验证结果发送给 {recipient}",
+            "route": "Wolt 分类找店 → 读取店名/评分/地址 → QQ 精确联系人 → 单次发送",
+            "steps": ["在 Wolt 浏览目标类别", "验证一家餐厅的店名、评分和地址", f"精确匹配联系人：{recipient}", "组合邀请语与餐厅信息并发送一次"],
+            "guard": "不下单；不操作 Display 0；不读取剪贴板；不向其他联系人发送；发送不可重放",
+            "proof": "Wolt 店名/评分/地址、QQ 完整消息、收件人、发送次数=1、主屏操作=0",
+        }
     if "qq" in folded and any(term in goal for term in ("发消息", "发送消息", "发信息", "发送信息")):
         match = re.search(r"(?:给|告诉)([^，,：:\s]+?)(?:发消息|发送消息|发信息|发送信息|说)", goal)
         recipient = match.group(1) if match else "契约指定联系人"
@@ -45,6 +60,14 @@ def build_local_task_analysis(goal: str) -> dict[str, object]:
             "guard": "每次只调整一个滚轮；已存在则不重复创建；不操作主屏",
             "proof": "目标时间、已保存、已开启、主屏操作=0",
         }
+    if any(term in folded for term in ("youtube", "youtobe", "油管")):
+        return {
+            "intent": "在 YouTube 中搜索并展示用户指定的视频结果",
+            "route": "解析搜索词 → YouTube 搜索深链 → 结果页 → 文本证据复核",
+            "steps": ["提取搜索主题", "打开免输入法搜索深链", "等待结果页加载", "核对搜索词和视频结果"],
+            "guard": "不聚焦搜索框；不操作 Display 0；不点赞、评论、订阅或购买",
+            "proof": "YouTube 结果页、搜索词、可见视频结果、主屏操作=0",
+        }
     if any(term in goal for term in ("网易云", "音乐", "播放")):
         return {
             "intent": "通过免输入法路径打开并验证指定媒体",
@@ -67,6 +90,7 @@ PRODUCT_CAPABILITIES = (
     ("时钟闹钟", "在隔离屏设置并重新验证目标时间"),
     ("QQ 草稿", "在指定联系人会话中编辑原文草稿并停留，不点击发送"),
     ("音乐播放", "通过免输入法路径搜索并验证播放状态"),
+    ("YouTube 搜索", "通过搜索深链展示指定主题的视频结果，不触发系统输入法"),
 )
 
 
@@ -75,6 +99,15 @@ def ensure_supported_scope(goal: str) -> None:
         raise TaskRequestError(
             "地图能力已移出当前演示范围；餐厅地址会直接从 Wolt 店铺详情页读取。"
         )
+    if "qq" in goal.casefold() and any(
+        term in goal for term in ("发消息", "发送消息", "发信息", "发送信息", "发给", "告诉")
+    ):
+        try:
+            require_explicit_qq_recipient(goal, Config.load().qq_test_recipient)
+        except ValueError as exc:
+            raise TaskRequestError(
+                f"{exc}；未明确联系人或超出当前测试配置时不会创建任务。"
+            ) from exc
 
 
 def compile_mission_contract(goal: str) -> TaskSpec:

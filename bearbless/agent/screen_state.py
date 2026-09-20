@@ -17,7 +17,7 @@ def screen_fingerprint(png: bytes, *, size: int = 64) -> str:
         image = Image.open(BytesIO(png)).convert("L").resize((size, size))
     except UnidentifiedImageError:
         return hashlib.sha256(png).hexdigest()
-    pixels = list(image.getdata())
+    pixels = list(image.get_flattened_data())
     mean = sum(pixels) / len(pixels)
     bits = "".join("1" if pixel >= mean else "0" for pixel in pixels)
     return f"{int(bits, 2):0{size * size // 4}x}"

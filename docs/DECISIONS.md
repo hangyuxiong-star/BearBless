@@ -246,6 +246,8 @@ The operator confirmed that Display 0 did not move during the test.
 
 **Music authentication boundary:** For “打开网易云音乐，搜索歌曲《这就是爱》并播放”, the agent navigated from the observed screen and then returned `TAKE_OVER` when the app required a new login. Authentication markers such as expired login, password, SMS code, and account verification are now a deterministic human boundary; the model may not explore credential-recovery flows.
 
+**Music monetization boundary:** NetEase VIP playback may insert an ad-funded listening offer, a timed reward ad, or a paid-membership upsell. These are deterministic states: BearBless may choose an explicitly labeled “看广告免费听” route, wait for the reward state, and return to the song, but it always backs out of membership, subscription, and payment surfaces. This logic runs before the general vision model and remains display-scoped.
+
 **Meituan generalization probe:** The agent generated a read-only contract specific to search and comparison, opened Meituan from the observed screen, and exposed two independent runtime defects rather than following the old route script: premature `REPORT` after completing only an app-open subgoal, and a model response using the OCR label `搜索` where the protocol required a numeric element id. `REPORT` is now rejected unless it covers a required task outcome, transient blank/loading verification is retryable, and a unique OCR text label is deterministically normalized to its element id. The subsequent run passed schema normalization but the local 8B model stalled during its next inference; the run was stopped without touching Display 0.
 
 **Conclusion:** The runtime is now reactive and task-conditioned, not a hard-coded route. It is not yet production-general: end-to-end success still depends on model latency, visual grounding quality, and completing the full success-criteria loop across unfamiliar apps.
@@ -253,6 +255,10 @@ The operator confirmed that Display 0 did not move during the test.
 ## 2026-09-17 — Explicit messaging and login handoff
 
 Messages are permitted only when the submitted task itself names the recipient and contains the complete message body. The contract stores that exact instruction as `sensitive_scope`; navigation, search and text entry remain separately typed, while the final send control must use `SENSITIVE`. The Guard rejects altered message text and rejects any `SENSITIVE` action whose reason is not an explicit final send. QQ is deterministically resolved to `com.tencent.mobileqq` so the model cannot confuse it with WeChat or another Tencent package.
+
+For the current physical-device test deployment, outbound QQ is additionally hard-allowlisted to the exact contact `红枣桂花熊`. The Dashboard rejects other or omitted recipients before queueing, and the runtime policy repeats the same check before app launch and before any sensitive action. This is a deployment safety boundary, not a prompt convention.
+
+**Wolt rating semantics:** The connected Denmark account exposes venue scores on a 10-point scale. “High rating” therefore means a verifiable score of at least 8.0/10; stricter fixed thresholds made the task depend on changing nearby inventory and list position, while converting it to a 5-point assumption would misreport the source UI. The exact observed score is always retained in evidence.
 
 Live QQ probing reached the logged-in message list and found the requested contact, but OCR confused the conversation row with the profile header. Three runs were stopped before text entry or transmission; no message was sent. This validated the fail-closed policy and exposed the need for stronger row-level grounding before the feature can be called reliable.
 

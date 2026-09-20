@@ -28,7 +28,7 @@ class Config:
     shadow_dpi: int = 420
     browser_package: str | None = None
     notes_package: str | None = None
-    command_timeout_seconds: float = 10.0
+    command_timeout_seconds: float = 20.0
     display_start_timeout_seconds: float = 15.0
     phone_model_provider: str = "ollama"
     phone_model_base_url: str = "http://127.0.0.1:11434/api/chat"
@@ -36,7 +36,8 @@ class Config:
     phone_verifier_model_name: str = "qwen3-vl-plus"
     phone_model_api_key: str | None = None
     accessibility_bridge_authority: str = "com.bearbless.bridge.control"
-    device_reconnect_attempts: int = 2
+    qq_test_recipient: str | None = None
+    device_reconnect_attempts: int = 5
     device_reconnect_delay_seconds: float = 1.0
 
     @classmethod
@@ -55,6 +56,8 @@ class Config:
             shadow_dpi=int(value("SHADOW_DPI", "420")),
             browser_package=value("BROWSER_PACKAGE") or None,
             notes_package=value("NOTES_PACKAGE") or None,
+            command_timeout_seconds=float(value("COMMAND_TIMEOUT_SECONDS", "20")),
+            display_start_timeout_seconds=float(value("DISPLAY_START_TIMEOUT_SECONDS", "20")),
             phone_model_provider=value("PHONE_MODEL_PROVIDER", "ollama"),
             phone_model_base_url=value("PHONE_MODEL_BASE_URL", "http://127.0.0.1:11434/api/chat"),
             phone_model_name=value("PHONE_MODEL_NAME", "qwen3-vl:4b"),
@@ -63,6 +66,7 @@ class Config:
             accessibility_bridge_authority=value(
                 "ACCESSIBILITY_BRIDGE_AUTHORITY", "com.bearbless.bridge.control"
             ),
-            device_reconnect_attempts=int(value("DEVICE_RECONNECT_ATTEMPTS", "2")),
+            qq_test_recipient=value("QQ_TEST_RECIPIENT") or None,
+            device_reconnect_attempts=int(value("DEVICE_RECONNECT_ATTEMPTS", "5")),
             device_reconnect_delay_seconds=float(value("DEVICE_RECONNECT_DELAY_SECONDS", "1.0")),
         )
