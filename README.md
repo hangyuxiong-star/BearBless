@@ -42,6 +42,26 @@ flowchart LR
 
 当前产品回归范围冻结为四类：QQ、Wolt、音乐和时钟。餐厅地址直接从 Wolt 店铺详情页读取，不依赖地图；地图能力不作为本次交付承诺。新 App 仍可尝试通用 GUI 能力，但不计入稳定演示范围。
 
+## 已验证环境与限制
+
+| 项目 | 已验证配置 |
+|---|---|
+| 真机 | Huawei P40 Pro（ELS-AN00 / `HWELS`） |
+| 系统 | Huawei Android 12，API 31 |
+| 虚拟屏 | scrcpy 4.1，1080×2400 / 420 dpi，运行时动态 display ID |
+| 主机工具 | ADB 1.0.41（37.0.1），Python 3.11+；当前开发环境 Python 3.12 |
+| 应用范围 | Wolt、QQ、网易云音乐、华为系统时钟；应用需已安装，账号状态由用户自行准备 |
+
+已知边界：
+
+- **设备/ROM 相关：** Shadow Display、截图和输入路由并非所有 Android ROM 都一致；更换手机必须先运行 `bearbless doctor`，不能沿用华为上的能力结论。目前未支持 iOS。
+- **需要电脑连接：** 当前原型依赖 USB 调试、ADB、scrcpy 和一个独立 Worker；目标是本地单手机演示，不是多设备生产调度系统。
+- **输入法限制：** 该华为 ROM 拒绝在“不受信任虚拟屏”上启用 scrcpy `local`/`hide` IME policy。中文输入依赖 display-scoped Accessibility Bridge；没有已验证的无 IME 路径时任务会停止。
+- **观察限制：** 全局 UIAutomator 在该设备上返回 Display 0，不能用于 Agent grounding；系统只使用指定虚拟屏截图、OCR/Set-of-Mark 和已验证的 display-scoped Accessibility。
+- **任务与账号边界：** 登录、验证码、人机验证转人工；付款、购买、读取凭据和越权消息发送默认禁止。App 更新、弹窗、网络和地区内容可能影响 GUI 路径。
+- **模型依赖：** 演示路径依赖阿里云百炼额度与网络。模型不可用、虚拟屏身份不确定或主屏/IME 泄漏时均 fail closed，不降级到 Display 0。
+- **能力声明：** 这是可信演示原型，不宣称跨设备、跨 App 的生产级通用性；稳定承诺仅覆盖上表与冻结回归口令。
+
 ## 部署
 
 要求：Android 11+、USB 调试、ADB、scrcpy 4.x、Python 3.11+。
