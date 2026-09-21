@@ -1191,7 +1191,7 @@ def test_wolt_chinese_skill_uses_category_without_search():
     state = TaskState("wolt-chinese", "在 Wolt 上找一家今晚营业、评分高的中餐店")
     food_types = (
         MarkedElement(1, "Food type", (40, 340, 440, 470)),
-        MarkedElement(2, "Chinese", (560, 1120, 760, 1230)),
+        MarkedElement(2, "Asian", (120, 520, 300, 720)),
         MarkedElement(3, "Search", (429, 2274, 638, 2315)),
     )
 
@@ -1199,7 +1199,7 @@ def test_wolt_chinese_skill_uses_category_without_search():
 
     assert action is not None
     assert action.action == ActionType.TAP
-    assert action.reason == "从 Food type 选择现有 Chinese 分类"
+    assert action.reason == "从 Food type 选择现有 Asian 分类"
     assert state.collected_data["app_skill_route"] == "wolt_chinese_categories"
     assert state.collected_data["wolt_chinese_filter_selected"] is True
 
@@ -1267,6 +1267,36 @@ def test_wolt_evening_merchant_page_opens_more_to_read_address():
     assert action.text == "More"
 
 
+def test_wolt_merchant_page_taps_more_when_ocr_merges_metadata_row():
+    state = TaskState(
+        "wolt-merged-more",
+        "打开Wolt找一家Asia店，读取并验证店名和完整地址，不下单",
+        collected_data={
+            "wolt_chinese_filter_selected": True,
+            "wolt_selected_restaurant": {
+                "name": "Cocks & Cows Lyngby",
+                "delivery": "25-35 min",
+                "category": "Asian",
+                "rating": "8.0",
+            },
+        },
+    )
+    elements = (
+        MarkedElement(1, "Cocks & Cows Lyngby", (60, 860, 830, 950)),
+        MarkedElement(2, "8.0 Open until 20:45 Min. order 75,00 kr", (120, 950, 900, 995)),
+        MarkedElement(3, "Smiley info More", (241, 998, 842, 1036)),
+        MarkedElement(4, "Delivery 25-35 min", (40, 1040, 660, 1110)),
+    )
+
+    action = _wolt_burger_action(state, elements, 5)
+
+    assert action is not None
+    assert action.action == ActionType.TAP
+    assert action.capability == ActionCapability.READ
+    assert action.reason == "打开 Wolt 商家信息行末的 More 以读取地址"
+    assert (action.x, action.y) == (772, 1017)
+
+
 def test_wolt_closes_accidentally_opened_order_details():
     state = TaskState(
         "wolt-order-details",
@@ -1294,7 +1324,7 @@ def test_wolt_chinese_skill_records_structured_restaurant_result():
         collected_data={"wolt_chinese_filter_selected": True},
     )
     results = (
-        MarkedElement(1, "Chinese", (40, 150, 500, 230)),
+        MarkedElement(1, "Asian", (40, 150, 500, 230)),
         MarkedElement(2, "China Palace", (180, 900, 520, 950)),
         MarkedElement(3, "25-35 min", (300, 980, 450, 1020)),
         MarkedElement(4, "© 89", (760, 980, 900, 1020)),
@@ -1307,7 +1337,7 @@ def test_wolt_chinese_skill_records_structured_restaurant_result():
     assert state.collected_data["wolt_restaurant"] == {
         "name": "China Palace",
         "delivery": "25-35 min",
-        "category": "Chinese",
+        "category": "Asian",
         "rating": "8.9",
     }
 

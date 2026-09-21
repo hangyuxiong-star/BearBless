@@ -251,18 +251,27 @@ def _wolt_food_action(state: TaskState, elements, display_id: int) -> Action | N
     goal = state.goal.casefold()
     if "wolt" not in goal:
         return None
-    if any(term in goal for term in ("中餐", "中式", "chinese")):
-        category = "Chinese"
+    if any(term in goal for term in ("中餐", "中式", "chinese", "asian", "asia", "亚洲")):
+        # Wolt renamed the broad Chinese entry to "Asian" in the current
+        # locale. Keep "Chinese" as a compatibility alias for older builds,
+        # but prefer the exact label exposed by today's Food type sheet.
+        category = "Asian"
+        category_aliases = ("Asian", "Chinese")
         route = "wolt_chinese_categories"
-        criterion = "Wolt Chinese restaurant results"
+        criterion = "Wolt Asian/Chinese restaurant results"
+        filter_key = "wolt_chinese_filter_selected"
     elif any(term in goal for term in ("japanese", "japanse", "日料", "日本料理", "日餐")):
         category = "Japanese"
+        category_aliases = (category,)
         route = "wolt_japanese_categories"
         criterion = "Wolt Japanese restaurant results"
+        filter_key = "wolt_japanese_filter_selected"
     elif any(term in goal for term in ("汉堡", "burger")):
         category = "Burger"
+        category_aliases = (category,)
         route = "wolt_burger_categories"
         criterion = "Wolt Burger results"
+        filter_key = "wolt_burger_filter_selected"
     else:
         return None
     state.collected_data["app_skill_route"] = route
@@ -297,7 +306,14 @@ def _wolt_food_action(state: TaskState, elements, display_id: int) -> Action | N
     # the requested category selected. Reconstruct that durable UI state from
     # the page instead of tapping the large Restaurants heading (whose area
     # overlaps the address selector above it on this layout).
-    visible_category = exact(category)
+    visible_category = next(
+        (match for alias in category_aliases if (match := exact(alias)) is not None),
+        None,
+    )
+    visible_category_label = next(
+        (label for item, label in labels if item is visible_category),
+        category,
+    )
     visible_times = [label for _, label in labels if re.search(r"\d+\s*[–-]\s*\d+\s*min", label, re.I)]
     if (
         "restaurants" in page_text
@@ -306,7 +322,7 @@ def _wolt_food_action(state: TaskState, elements, display_id: int) -> Action | N
         and visible_times
         and _wolt_ranked_candidate(labels) is not None
     ):
-        state.collected_data[f"wolt_{category.casefold()}_filter_selected"] = True
+        state.collected_data[filter_key] = True
 
     # If the address selector was left open, selecting the already checked
     # Home row is navigation back to the existing context, not a location
@@ -541,6 +557,28 @@ def _wolt_food_action(state: TaskState, elements, display_id: int) -> Action | N
                     capability=ActionCapability.READ,
                     reason="打开 Wolt 商家信息以读取地址",
                 )
+            # Tesseract often merges the complete metadata row into one box,
+            # for example “Smiley info More”. Tap the right-hand More segment
+            # of that proven row instead of waiting for an exact OCR token.
+            merged_more = next(
+                (
+                    item for item, label in labels
+                    if re.search(r"\bmore\s*$", label, re.I)
+                    and item.bounds[2] - item.bounds[0] >= 180
+                ),
+                None,
+            )
+            if merged_more is not None and not state.collected_data.get("wolt_more_opened"):
+                state.collected_data["wolt_more_opened"] = True
+                left, top, right, bottom = merged_more.bounds
+                return Action(
+                    ActionType.TAP,
+                    display_id=display_id,
+                    x=max(left, right - 70),
+                    y=(top + bottom) // 2,
+                    capability=ActionCapability.READ,
+                    reason="打开 Wolt 商家信息行末的 More 以读取地址",
+                )
             waits = int(state.collected_data.get("wolt_address_waits", 0)) + 1
             state.collected_data["wolt_address_waits"] = waits
             if waits <= 2:
@@ -561,7 +599,6 @@ def _wolt_food_action(state: TaskState, elements, display_id: int) -> Action | N
             reason="退出 Wolt Market 分类，返回餐饮入口",
         )
 
-    filter_key = f"wolt_{category.casefold()}_filter_selected"
     if state.collected_data.get(filter_key):
         time_labels = [label for _, label in labels if re.search(r"\d+\s*[–-]\s*\d+\s*min", label, re.I)]
         ranked = _wolt_ranked_candidate(labels)
@@ -660,7 +697,7 @@ def _wolt_food_action(state: TaskState, elements, display_id: int) -> Action | N
         return Action(
             ActionType.TAP, display_id=display_id, x=x, y=y,
             capability=ActionCapability.SEARCH,
-            reason=f"从 Food type 选择现有 {category} 分类",
+            reason=f"从 Food type 选择现有 {visible_category_label} 分类",
         )
 
     if "restaurants" in page_text and food_type is not None:

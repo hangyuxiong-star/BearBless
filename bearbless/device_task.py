@@ -35,6 +35,11 @@ from datetime import datetime, timezone
 
 
 DEFAULT_ROUTE_URL = "https://www.dsb.dk/find-produkter-og-services/dsb-udland/tyskland/hamborg/"
+WOLT_ROUTE_CRITERIA = {
+    "wolt_burger_categories": "Wolt Burger results",
+    "wolt_chinese_categories": "Wolt Asian/Chinese restaurant results",
+    "wolt_japanese_categories": "Wolt Japanese restaurant results",
+}
 
 
 def recover_stale_qq_share_task(adb: AdbClient, primary_activity: str | None) -> bool:
@@ -77,7 +82,7 @@ def wolt_qq_message(
 
 def wolt_requested_category(goal: str) -> tuple[str, str]:
     folded = goal.casefold()
-    if any(term in folded for term in ("中餐", "中式", "chinese")):
+    if any(term in folded for term in ("中餐", "中式", "chinese", "asian", "asia", "亚洲")):
         return "中餐店", "中餐店"
     if any(term in folded for term in ("japanese", "japanse", "日料", "日本料理", "日餐")):
         return "日料店", "日料店"
@@ -117,7 +122,14 @@ def run_wolt_to_qq_task(
     )
     wolt_state = run_general_device_task(wolt_goal, wolt_spec, should_cancel)
     if wolt_state.status != TaskStatus.COMPLETED:
-        raise RuntimeError(f"Wolt 子任务未完成，禁止进入 QQ：{wolt_state.failure_reason or '未知失败'}")
+        # Return the child state instead of raising away its task id. The
+        # queue and Dashboard can then retain the real Wolt frames and display
+        # id while still proving that QQ was never entered.
+        wolt_state.failure_reason = (
+            f"Wolt 子任务未完成，禁止进入 QQ：{wolt_state.failure_reason or '未知失败'}"
+        )
+        wolt_state.collected_data["compound_parent_goal"] = goal
+        return wolt_state
     restaurant = wolt_state.collected_data.get("wolt_restaurant")
     if not isinstance(restaurant, dict):
         raise RuntimeError("Wolt 子任务没有产生可验证餐厅结果，禁止进入 QQ")
@@ -349,7 +361,7 @@ def run_general_device_task(
             bundle.display.launch_app(package, app_uri)
         if package == "com.wolt.android":
             folded_goal = goal.casefold()
-            if any(term in folded_goal for term in ("中餐", "中式", "chinese")):
+            if any(term in folded_goal for term in ("中餐", "中式", "chinese", "asian", "asia", "亚洲")):
                 state.collected_data["app_skill_route"] = "wolt_chinese_categories"
             elif any(term in folded_goal for term in ("japanese", "japanse", "日料", "日本料理", "日餐")):
                 state.collected_data["app_skill_route"] = "wolt_japanese_categories"
@@ -518,14 +530,9 @@ def run_general_device_task(
                 package_identity_checker=package_active_on_shadow,
                 qq_confirmation_recipient_checker=qq_confirmation_recipient_in_sheet,
             )
-            wolt_criteria = {
-                "wolt_burger_categories": "Wolt Burger results",
-                "wolt_chinese_categories": "Wolt Chinese restaurant results",
-                "wolt_japanese_categories": "Wolt Japanese restaurant results",
-            }
             verifier = (
-                EvidenceVerifier((wolt_criteria[route],))
-                if route in wolt_criteria
+                EvidenceVerifier((WOLT_ROUTE_CRITERIA[route],))
+                if route in WOLT_ROUTE_CRITERIA
                 else EvidenceVerifier(("QQ message draft staged",))
                 if route == "qq_share_draft"
                 else QQMessageVerifier()
