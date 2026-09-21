@@ -750,6 +750,42 @@ def test_qq_message_verifier_accepts_committed_exact_send_when_blue_bubble_ocr_f
     assert result.passed is True
 
 
+def test_qq_message_verifier_uses_shared_recipient_parser_after_share_activity_closes(tmp_path: Path):
+    state = observed_state(tmp_path)
+    state.goal = "打开QQ给红枣桂花熊发消息说：今天吃饭"
+    state.task_spec = TaskSpec(
+        goal=state.goal,
+        task_mode=TaskMode.SENSITIVE_TASK,
+        constraints={"user_confirmed_sensitive_action": True, "sensitive_scope": state.goal},
+        success_criteria=[SuccessCriterion(name="sent", description="sent")],
+    )
+    state.collected_data["sensitive_effect"] = {"phase": "COMMITTED"}
+    state.action_history.extend((
+        {
+            "action": "CLICK_TEXT",
+            "text": "红枣桂花熊",
+            "reason": "通过 Accessibility 精确选择联系人 红枣桂花熊",
+            "capability": "READ",
+        },
+        {
+            "action": "CLICK_TEXT",
+            "text": "发送",
+            "reason": "点击发送已确认且由分享意图预载的 QQ 消息",
+            "capability": "SENSITIVE",
+        },
+    ))
+
+    class ClosedShareActivityGrounder:
+        def ground(self, frame_path):
+            return GroundedScreen(Path(frame_path), ())
+
+    result = QQMessageVerifier(ClosedShareActivityGrounder()).verify(state)
+
+    assert result.passed is True
+    assert result.evidence[0]["summary"] == "recipient=红枣桂花熊; message=今天吃饭; committed=True"
+    assert "已向红枣桂花熊发送“今天吃饭”" in result.reason
+
+
 def test_confirmed_qq_message_never_uses_payload_preview_as_recipient(tmp_path: Path):
     message = "去 MAX Premium Burgers Herlev 吃吧，评分 8.3。"
     state = observed_state(tmp_path)

@@ -59,12 +59,13 @@ flowchart LR
 | 真机 | Huawei P40 Pro（ELS-AN00 / `HWELS`） |
 | 系统 | Huawei Android 12，API 31 |
 | 虚拟屏 | scrcpy 4.1，1080×2400 / 420 dpi，运行时动态 display ID |
+| 中文输入桥 | Huawei P40 Pro 上执行 QQ 中文消息/草稿任务时必须安装并启用 BearBless Bridge |
 | 主机工具 | ADB 1.0.41（37.0.1），Python 3.11+；当前开发环境 Python 3.12 |
 | 应用范围 | Wolt、QQ、网易云音乐、YouTube、华为系统时钟；应用需已安装，账号状态由用户自行准备 |
 
 已知边界：
 
-- **设备/ROM 相关：** Shadow Display、截图和输入路由并非所有 Android ROM 都一致；更换手机必须先运行 `bearbless doctor`，不能沿用华为上的能力结论。目前未支持 iOS。
+- **设备/ROM 相关：** Shadow Display、截图和输入路由并非所有 Android ROM 都一致；当前仅在 Huawei P40 Pro（Android 12 / API 31）完成端到端真机验证。更换手机必须先运行 `bearbless doctor`，不能沿用华为上的能力结论。目前未支持 iOS。
 - **需要电脑连接：** 当前原型依赖 USB 调试、ADB、scrcpy 和一个独立 Worker；目标是本地单手机演示，不是多设备生产调度系统。
 - **输入法限制：** 该华为 ROM 拒绝在“不受信任虚拟屏”上启用 scrcpy `local`/`hide` IME policy。中文输入依赖 display-scoped Accessibility Bridge；没有已验证的无 IME 路径时任务会停止。
 - **观察限制：** 全局 UIAutomator 在该设备上返回 Display 0，不能用于 Agent grounding；系统只使用指定虚拟屏截图、OCR/Set-of-Mark 和已验证的 display-scoped Accessibility。
@@ -90,13 +91,28 @@ python -m bearbless worker
 streamlit run dashboard/app.py
 ```
 
-若任务需要中文输入，构建并安装 `android-bridge/`，在手机辅助功能中启用 **BearBless 虚拟屏输入桥**，然后验证：
+### Huawei P40 Pro：QQ 中文任务必须安装 Bridge
+
+在已验证的 Huawei P40 Pro 上，QQ 中文消息和草稿任务依赖 display-scoped Accessibility Bridge。它用于在 Agent 虚拟屏上精确选择联系人和设置中文文本，避免唤起 Display 0 的全局输入法。**演示前必须安装并启用；未启用时任务会 fail closed，不会回退到主屏。**
+
+构建要求 Android Studio 或 Android SDK 35：
+
+```bash
+cd android-bridge
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+cd ..
+```
+
+安装后在手机上打开 **设置 → 辅助功能 → 无障碍 → BearBless 虚拟屏输入桥**，然后验证：
 
 ```bash
 adb shell content call \
   --uri content://com.bearbless.bridge.control \
   --method health
 ```
+
+必须看到 `Result: Bundle[{enabled=true}]`。`enabled=false` 表示设备部署未完成，不是 Agent 规划失败。
 
 Dashboard：`http://127.0.0.1:8501`。提交任务、确认边界后即可离开 Dashboard，执行由独立 Worker 进程完成。请求使用跨进程原子领取、lease 心跳与过期回收；Dashboard 重载不会中断正在执行的任务。
 

@@ -1809,11 +1809,13 @@ class QQMessageVerifier:
             (state.task_spec.constraints.get("sensitive_scope") if state.task_spec else "")
             or state.goal
         )
-        recipient_match = re.search(
-            r"(?:给|告诉)[‘'\"“]?([^，,：:\s]{1,40})[’'\"”]?(?:发|说|，|,)",
-            scope,
-        )
-        recipient = recipient_match.group(1) if recipient_match else ""
+        # Use the same parser that authorizes the recipient before launch and
+        # before the sensitive Send click. A verifier-local regex previously
+        # parsed "给红枣桂花熊发消息说：今天吃饭" as the recipient
+        # "红枣桂花熊发消息". That turned a successfully committed send
+        # into a false failure when QQ closed its share Activity instead of
+        # rendering a chat bubble on the virtual display.
+        recipient = extract_confirmed_recipient(scope)
         message = extract_confirmed_message(scope)
         effect = state.collected_data.get("sensitive_effect")
         committed = isinstance(effect, dict) and effect.get("phase") == "COMMITTED"
